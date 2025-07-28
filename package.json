@@ -1,0 +1,47 @@
+{
+  "name": "octahedron-impostor",
+  "version": "0.0.1",
+  "description": "",
+  "author": "Andrea Gargaro <devgargaro@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "module": "build/index.js",
+  "main": "build/index.cjs",
+  "types": "src/index.d.ts",
+  "homepage": "",
+  "repository": "https://github.com/agargaro/octahedron-imposter",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./src/index.d.ts",
+        "default": "./build/index.js"
+      },
+      "require": {
+        "types": "./src/index.d.ts",
+        "default": "./build/index.cjs"
+      }
+    }
+  },
+  "keywords": [
+    "three",
+    "three.js",
+    "threejs",
+    "imposter",
+    "impostor"
+  ],
+  "scripts": {
+    "start": "vite",
+    "build": "vite build && tsc",
+    "lint": "npx eslint --fix",
+    "test": "echo todo add tests"
+  },
+  "devDependencies": {
+    "@types/three": "^0.178.0",
+    "stats.js": "^0.17.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.6"
+  },
+  "peerDependencies": {
+    "three": ">=0.159.0"
+  }
+}
