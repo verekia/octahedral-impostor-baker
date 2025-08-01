@@ -1,6 +1,5 @@
-import { BufferGeometry, BufferGeometryLoader, Mesh, MeshNormalMaterial, WebGLRenderer } from 'three';
-import { createTextureAtlas } from '../src/utils/createTextureAtlas.js';
-import { exportTextureFromRenderTarget } from '../src/utils/exportTextureFromRenderTarget.js';
+import { BufferGeometryLoader, Mesh, MeshNormalMaterial, WebGLRenderer } from 'three';
+import { createTextureAtlas, exportTextureFromRenderTarget } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });

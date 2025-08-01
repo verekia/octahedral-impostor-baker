@@ -1,7 +1,7 @@
 import { Mesh, MeshBasicMaterial, OrthographicCamera, PlaneGeometry, Scene, WebGLRenderer } from 'three';
-import { GLTF, GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
+import { GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
 import Stats from 'stats.js';
-import { createTextureAtlas } from '../src/utils/createTextureAtlas.js';
+import { createTextureAtlas } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });

@@ -1,8 +1,8 @@
-import { DirectionalLight, MeshLambertMaterial, MeshNormalMaterial, OrthographicCamera, Scene, WebGLRenderer } from 'three';
-import { GLTF, GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
+import { DirectionalLight, MeshLambertMaterial, OrthographicCamera, Scene, WebGLRenderer } from 'three';
+import { GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
 import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js';
 import Stats from 'stats.js';
-import { OctahedralImpostor } from '../src/core/octahedralImpostor.js';
+import { OctahedralImpostor } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
