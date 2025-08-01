@@ -34,6 +34,7 @@
     "test": "echo todo add tests"
   },
   "devDependencies": {
+    "@dimforge/rapier3d-compat": "0.18.0",
     "@types/three": "0.178.0",
     "lil-gui": "0.20.0",
     "stats.js": "0.17.0",

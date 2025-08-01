@@ -1,6 +1,6 @@
 import { 
   GLSL3, HalfFloatType, IUniform, LinearFilter, LinearSRGBColorSpace, Material, Matrix4, Mesh, MeshStandardMaterial, 
-  NearestFilter, Object3D, OrthographicCamera, PlaneGeometry, ShaderMaterial, 
+  NearestFilter, Object3D, OrthographicCamera, PlaneGeometry, Scene, ShaderMaterial, 
   Sphere, Texture, UnsignedByteType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget 
 } from 'three';
 
@@ -47,16 +47,20 @@ export function hemiOctaGridToDir(grid: Vector2, target = new Vector3()): Vector
 }
 
 export function octaGridToDir(grid: Vector2, target = new Vector3()): Vector3 {
-  target.set(2 * (grid.x - 0.5), 0, 2 * (grid.y - 0.5));
-  absolute.set(Math.abs(target.x), 0, Math.abs(target.z));
-  target.y = 1 - absolute.x - absolute.z;
+  // Full octahedral decoding
+  const encoded = new Vector2(grid.x * 2 - 1, grid.y * 2 - 1);
+  target.set(encoded.x, 0, encoded.y);
+  target.y = 1 - Math.abs(target.x) - Math.abs(target.z);
 
   if (target.y < 0) {
-    target.x = Math.sign(target.x) * (1 - absolute.z);
-    target.z = Math.sign(target.z) * (1 - absolute.x);
+    const signNotZeroX = target.x >= 0 ? 1 : -1;
+    const signNotZeroZ = target.z >= 0 ? 1 : -1;
+    const oldX = target.x;
+    target.x = (1 - Math.abs(target.z)) * signNotZeroX;
+    target.z = (1 - Math.abs(oldX)) * signNotZeroZ;
   }
 
-  return target;
+  return target.normalize();
 }
 
 export function hemiOctaDirToGrid(dir: Vector3, target = new Vector2()): Vector2 {
@@ -68,6 +72,22 @@ export function hemiOctaDirToGrid(dir: Vector3, target = new Vector2()): Vector2
     (1 + octahedron.x + octahedron.z) * 0.5,
     (1 + octahedron.z - octahedron.x) * 0.5
   );
+}
+
+export function octaDirToGrid(dir: Vector3, target = new Vector2()): Vector2 {
+  // Full octahedral encoding
+  const absDir = new Vector3(Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z));
+  const normalizedDir = dir.clone().divideScalar(absDir.x + absDir.y + absDir.z);
+  
+  if (normalizedDir.y < 0) {
+    const signNotZeroX = normalizedDir.x >= 0 ? 1 : -1;
+    const signNotZeroZ = normalizedDir.z >= 0 ? 1 : -1;
+    const oldX = normalizedDir.x;
+    normalizedDir.x = (1 - Math.abs(normalizedDir.z)) * signNotZeroX;
+    normalizedDir.z = (1 - Math.abs(oldX)) * signNotZeroZ;
+  }
+  
+  return target.set(normalizedDir.x * 0.5 + 0.5, normalizedDir.z * 0.5 + 0.5);
 }
 
 /**
@@ -107,6 +127,62 @@ export function exportTextureFromRenderTarget(renderer: WebGLRenderer, renderTar
   link.href = dataURL;
   link.download = `${fileName}.png`;
   link.click();
+}
+
+/**
+ * Export texture as PNG download
+ */
+export function exportTextureAsPNG(renderer: WebGLRenderer, texture: Texture, fileName: string): void {
+  // Create a temporary render target
+  const width = texture.image.width;
+  const height = texture.image.height;
+  
+  if (!width || !height) {
+    console.warn('Texture has no valid dimensions for export');
+    return;
+  }
+
+  const renderTarget = new WebGLRenderTarget(width, height);
+  
+  // Create a plane geometry and material to render the texture
+  const planeGeometry = new PlaneGeometry(2, 2);
+  const planeMaterial = new ShaderMaterial({
+    vertexShader: `
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tTexture;
+      void main() {
+        vec2 uv = gl_FragCoord.xy / vec2(${width}.0, ${height}.0);
+        gl_FragColor = texture2D(tTexture, uv);
+      }
+    `,
+    uniforms: {
+      tTexture: { value: texture }
+    }
+  });
+  
+  const planeMesh = new Mesh(planeGeometry, planeMaterial);
+  const tempScene = new Scene();
+  tempScene.add(planeMesh);
+  
+  const tempCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  
+  // Render texture to render target
+  const oldRenderTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(renderTarget);
+  renderer.render(tempScene, tempCamera);
+  renderer.setRenderTarget(oldRenderTarget);
+  
+  // Export the render target
+  exportTextureFromRenderTarget(renderer, renderTarget, fileName, 0);
+  
+  // Cleanup
+  renderTarget.dispose();
+  planeGeometry.dispose();
+  planeMaterial.dispose();
 }
 
 // ============================================================================
@@ -296,6 +372,14 @@ export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtl
     if (useHemiOctahedron) hemiOctaGridToDir(atlasCoords, atlasCamera.position);
     else octaGridToDir(atlasCoords, atlasCamera.position);
 
+    // Debug: Log camera directions to see the difference
+    if (col === 0 && row === 0) {
+      console.log(`Atlas generation mode: ${useHemiOctahedron ? 'Hemispherical' : 'Full Spherical'}`);
+    }
+    if ((col + row * countPerSide) % 30 === 0) { // Log every 30th position
+      console.log(`Grid ${col},${row} -> Direction: (${atlasCamera.position.x.toFixed(2)}, ${atlasCamera.position.y.toFixed(2)}, ${atlasCamera.position.z.toFixed(2)})`);
+    }
+
     atlasCamera.position.setLength(atlasBSphere.radius * cameraFactor).add(atlasBSphere.center);
     atlasCamera.lookAt(atlasBSphere.center);
 
@@ -395,7 +479,21 @@ if (vSpritesWeight.x >= test) {
   sprite3 = texture(map, uv3);
 }
 
-vec4 blendedColor = sprite1 * vSpritesWeight.x + sprite2 * vSpritesWeight.y + sprite3 * vSpritesWeight.z;
+vec4 blendedColor;
+
+if (disableBlending > 0.5) {
+  // Use only the sprite with the highest weight (no blending)
+  if (vSpritesWeight.x >= vSpritesWeight.y && vSpritesWeight.x >= vSpritesWeight.z) {
+    blendedColor = sprite1;
+  } else if (vSpritesWeight.y >= vSpritesWeight.z) {
+    blendedColor = sprite2;
+  } else {
+    blendedColor = sprite3;
+  }
+} else {
+  // Standard triplanar blending
+  blendedColor = sprite1 * vSpritesWeight.x + sprite2 * vSpritesWeight.y + sprite3 * vSpritesWeight.z;
+}
 
 if (blendedColor.a <= alphaClamp) discard;
 
@@ -408,7 +506,12 @@ diffuseColor *= blendedColor;
 
 const shaderChunkNormalFragmentBegin = `
 // #include <normal_fragment_begin>
-vec3 normal = blendNormals(uv1, uv2, uv3);
+vec3 normal;
+if (disableBlending > 0.5) {
+  normal = blendNormalsNoBlending(uv1, uv2, uv3);
+} else {
+  normal = blendNormals(uv1, uv2, uv3);
+}
 vec3 nonPerturbedNormal = normal;
 `;
 
@@ -417,6 +520,7 @@ const shaderChunkParamsFragment = `
 
 uniform float spritesPerSide;
 uniform float alphaClamp;
+uniform float disableBlending;
 
 #ifdef OCTAHEDRAL_USE_ORM
 uniform sampler2D ormMap;
@@ -437,6 +541,21 @@ vec3 blendNormals(vec2 uv1, vec2 uv2, vec2 uv3) {
   vec4 normalDepth3 = texture2D(normalMap, uv3);
 
   return normalize(normalDepth1.xyz * vSpritesWeight.x + normalDepth2.xyz * vSpritesWeight.y + normalDepth3.xyz * vSpritesWeight.z);
+}
+
+vec3 blendNormalsNoBlending(vec2 uv1, vec2 uv2, vec2 uv3) {
+  vec4 normalDepth1 = texture2D(normalMap, uv1);
+  vec4 normalDepth2 = texture2D(normalMap, uv2);
+  vec4 normalDepth3 = texture2D(normalMap, uv3);
+
+  // Use only the normal with the highest weight (no blending)
+  if (vSpritesWeight.x >= vSpritesWeight.y && vSpritesWeight.x >= vSpritesWeight.z) {
+    return normalize(normalDepth1.xyz);
+  } else if (vSpritesWeight.y >= vSpritesWeight.z) {
+    return normalize(normalDepth2.xyz);
+  } else {
+    return normalize(normalDepth3.xyz);
+  }
 }
 #endif
 
@@ -468,7 +587,18 @@ vec2 encodeDirection(vec3 direction) {
 
   #else
 
-  // TODO: Implement full octahedral encoding
+  // Full octahedral encoding
+  vec3 absDir = abs(direction);
+  direction /= (absDir.x + absDir.y + absDir.z);
+  
+  if (direction.y < 0.0) {
+    vec2 signNotZero = vec2(direction.x >= 0.0 ? 1.0 : -1.0, direction.z >= 0.0 ? 1.0 : -1.0);
+    float oldX = direction.x;
+    direction.x = (1.0 - abs(direction.z)) * signNotZero.x;
+    direction.z = (1.0 - abs(oldX)) * signNotZero.y;
+  }
+  
+  return direction.xz * 0.5 + 0.5;
 
   #endif
 }
@@ -483,7 +613,17 @@ vec3 decodeDirection(vec2 gridIndex, vec2 spriteCountMinusOne) {
 
   #else
 
-    // TODO: Implement full octahedral decoding
+  // Full octahedral decoding
+  vec2 encoded = gridUV * 2.0 - 1.0;
+  vec3 position = vec3(encoded.x, 0.0, encoded.y);
+  position.y = 1.0 - abs(position.x) - abs(position.z);
+
+  if (position.y < 0.0) {
+    vec2 signNotZero = vec2(position.x >= 0.0 ? 1.0 : -1.0, position.z >= 0.0 ? 1.0 : -1.0);
+    float oldX = position.x;
+    position.x = (1.0 - abs(position.z)) * signNotZero.x;
+    position.z = (1.0 - abs(oldX)) * signNotZero.y;
+  }
 
   #endif
 
@@ -547,7 +687,8 @@ vec3 cameraPosLocal = (inverse(instanceMatrix2 * modelMatrix) * vec4(cameraPosit
 vec3 cameraPosLocal = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
 #endif
 
-vec3 cameraDir = normalize(cameraPosLocal);
+// Keep impostor upright by only considering horizontal camera direction (XZ plane)
+vec3 cameraDir = normalize(vec3(cameraPosLocal.x, 0.0, cameraPosLocal.z));
 
 vec3 projectedVertex = projectVertex(cameraDir);
 vec3 viewDirLocal = normalize(projectedVertex - cameraPosLocal);
@@ -597,6 +738,7 @@ export interface OctahedralImpostorUniforms {
   spritesPerSide: IUniform<number>;
   alphaClamp: IUniform<number>;
   transform: IUniform<Matrix4>;
+  disableBlending: IUniform<number>;
 }
 
 export interface CreateOctahedralImpostor<T extends Material> extends OctahedralImpostorMaterial, CreateTextureAtlasParams {
@@ -608,6 +750,7 @@ export interface OctahedralImpostorMaterial {
   alphaClamp?: number;
   scale?: number;
   translation?: Vector3;
+  disableBlending?: boolean;
 }
 
 declare module 'three' {
@@ -621,7 +764,7 @@ declare module 'three' {
 export function createOctahedralImpostorMaterial<T extends Material>(parameters: CreateOctahedralImpostor<T>): T {
   if (!parameters) throw new Error('createOctahedralImpostorMaterial: parameters is required.');
   if (!parameters.baseType) throw new Error('createOctahedralImpostorMaterial: baseType is required.');
-  if (!parameters.useHemiOctahedron) throw new Error('createOctahedralImpostorMaterial: useHemiOctahedron is required.');
+  if (parameters.useHemiOctahedron === undefined || parameters.useHemiOctahedron === null) throw new Error('createOctahedralImpostorMaterial: useHemiOctahedron is required.');
 
   const { albedo, normalDepth } = createTextureAtlas(parameters);
 
@@ -642,7 +785,8 @@ export function createOctahedralImpostorMaterial<T extends Material>(parameters:
   material.octahedralImpostorUniforms = {
     spritesPerSide: { value: spritesPerSide ?? 16 },
     alphaClamp: { value: alphaClamp ?? 0.1 },
-    transform: { value: new Matrix4().makeScale(scale || 1, scale || 1, scale || 1).setPosition(translation || new Vector3()) }
+    transform: { value: new Matrix4().makeScale(scale || 1, scale || 1, scale || 1).setPosition(translation || new Vector3()) },
+    disableBlending: { value: parameters.disableBlending ? 1.0 : 0.0 }
   };
 
   overrideMaterialCompilation(material);

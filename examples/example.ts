@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
-import { OctahedralImpostor } from '../src/index.js';
+import { OctahedralImpostor, exportTextureAsPNG } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
@@ -56,18 +56,103 @@ loader.load('tree.glb', (gltf) => {
 
   scene.add(mesh, directionalLight);
 
-  const impostor = new OctahedralImpostor({
+  // Configuration for texture atlas generation
+  const atlasConfig = {
+    textureSize: 2048,
+    spritesPerSide: 12,
+    useHemiOctahedron: true,
+    regenerate: () => {
+      regenerateImpostor();
+    }
+  };
+
+  // Dynamic material settings (no regeneration needed)
+  const materialConfig = {
+    transparent: true,
+    disableBlending: false
+  };
+  
+  // Info display
+  const infoDisplay = {
+    totalAngles: atlasConfig.spritesPerSide * atlasConfig.spritesPerSide,
+    atlasInfo: `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`,
+    updateInfo: function() {
+      this.totalAngles = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
+      this.atlasInfo = `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`;
+    }
+  };
+
+  let impostor = new OctahedralImpostor({
     renderer: renderer,
     target: mesh,
-    useHemiOctahedron: true,
-    transparent: true,
-    spritesPerSide: 16,
-    textureSize: 8192,
+    useHemiOctahedron: atlasConfig.useHemiOctahedron,
+    transparent: materialConfig.transparent,
+    disableBlending: materialConfig.disableBlending,
+    spritesPerSide: atlasConfig.spritesPerSide,
+    textureSize: atlasConfig.textureSize,
     baseType: MeshLambertMaterial
   });
   scene.add(impostor);
 
   mesh.visible = false;
+
+  let alphaClampController: any;
+  let transparentController: any;
+
+  function regenerateImpostor() {
+    console.log('Starting regeneration...');
+    
+    // Remove old impostor
+    scene.remove(impostor);
+    
+    // Dispose of old material and textures
+    if (impostor.material.map) impostor.material.map.dispose();
+    if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+    impostor.material.dispose();
+    
+    // Ensure mesh is visible during texture atlas generation
+    mesh.visible = true;
+    mesh.updateMatrixWorld(true);
+    
+    try {
+      // Create new impostor with updated settings
+      impostor = new OctahedralImpostor({
+        renderer: renderer,
+        target: mesh,
+        useHemiOctahedron: atlasConfig.useHemiOctahedron,
+        transparent: materialConfig.transparent,
+        disableBlending: materialConfig.disableBlending,
+        spritesPerSide: atlasConfig.spritesPerSide,
+        textureSize: atlasConfig.textureSize,
+        baseType: MeshLambertMaterial
+      });
+      
+      scene.add(impostor);
+      
+      // Hide original mesh and show impostor based on config
+      mesh.visible = !config.showImpostor;
+      impostor.visible = config.showImpostor;
+      
+      // Update GUI controllers to reference new material
+      if (alphaClampController) {
+        alphaClampController.object = impostor.material.octahedralImpostorUniforms.alphaClamp;
+      }
+      
+      // Apply current material settings to new impostor
+      impostor.material.transparent = materialConfig.transparent;
+      impostor.material.octahedralImpostorUniforms.disableBlending.value = materialConfig.disableBlending ? 1.0 : 0.0;
+      impostor.material.needsUpdate = true;
+      
+      // Update info display
+      infoDisplay.updateInfo();
+      
+      console.log(`✅ Regenerated texture atlas: ${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} frames (${atlasConfig.spritesPerSide * atlasConfig.spritesPerSide} total angles)`);
+    } catch (error) {
+      console.error('❌ Error during regeneration:', error);
+      // Fallback: ensure mesh is visible if impostor creation fails
+      mesh.visible = true;
+    }
+  }
 
   // Animation loop
   function animate() {
@@ -81,12 +166,65 @@ loader.load('tree.glb', (gltf) => {
 
   const config = { showImpostor: true };
   const gui = new GUI();
-  gui.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
-  gui.add(impostor.material, 'transparent').onChange((value) => impostor.material.needsUpdate = true);
-  gui.add(config, 'showImpostor').onChange((value) => {
+  
+  // Texture Atlas Generation Settings
+  const atlasFolder = gui.addFolder('Texture Atlas Settings');
+  atlasFolder.add(atlasConfig, 'textureSize', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)').onChange(() => {
+    infoDisplay.updateInfo();
+    console.log(`Texture size changed to: ${atlasConfig.textureSize}px`);
+  });
+  atlasFolder.add(atlasConfig, 'spritesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side').onChange(() => {
+    infoDisplay.updateInfo();
+    const totalFrames = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
+    console.log(`Frames changed to: ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} (${totalFrames} angles)`);
+  });
+  atlasFolder.add(atlasConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  atlasFolder.add(infoDisplay, 'totalAngles').name('📊 Total Angles').listen().disable();
+  atlasFolder.add(infoDisplay, 'atlasInfo').name('📏 Current Atlas').listen().disable();
+  atlasFolder.add(atlasConfig, 'regenerate').name('🔄 Regenerate Atlas');
+  atlasFolder.open();
+  
+  // Material Settings
+  const materialFolder = gui.addFolder('Material Settings');
+  alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
+  
+  // Dynamic material controls (no regeneration needed)
+  materialFolder.add(materialConfig, 'transparent').name('Transparent').onChange((value) => {
+    impostor.material.transparent = value;
+    impostor.material.needsUpdate = true;
+  });
+  materialFolder.add(materialConfig, 'disableBlending').name('Disable Triplanar Blending').onChange((value) => {
+    impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
+  });
+  
+  materialFolder.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;
     impostor.visible = value;
   });
+  
+  // Export functionality
+  const exportFolder = gui.addFolder('Export Texture Atlas');
+  const exportConfig = {
+    exportAlbedo: () => {
+      const albedoTexture = impostor.material.map;
+      if (albedoTexture) {
+        exportTextureAsPNG(renderer, albedoTexture, `albedo_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
+      } else {
+        console.warn('Albedo texture not available for export');
+      }
+    },
+    exportNormalDepth: () => {
+      const normalTexture = impostor.material.normalMap;
+      if (normalTexture) {
+        exportTextureAsPNG(renderer, normalTexture, `normalDepth_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
+      } else {
+        console.warn('Normal/Depth texture not available for export');
+      }
+    }
+  };
+  exportFolder.add(exportConfig, 'exportAlbedo').name('📤 Export Albedo PNG');
+  exportFolder.add(exportConfig, 'exportNormalDepth').name('📤 Export Normal/Depth PNG');
+  
   const lightFolder = gui.addFolder('Directional Light');
   lightFolder.add(directionalLight, 'intensity', 0, 10, 0.01).name('Intensity');
   lightFolder.add(lightPosition, 'azimuth', -180, 180, 1).name('Azimuth').onChange(() => lightPosition.update());
