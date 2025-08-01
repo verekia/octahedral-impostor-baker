@@ -1,5 +1,6 @@
 import { Mesh, MeshBasicMaterial, OrthographicCamera, PlaneGeometry, Scene, WebGLRenderer } from 'three';
-import { GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import Stats from 'stats.js';
 import { createTextureAtlas } from '../src/index.js';
 
@@ -31,7 +32,7 @@ controls.update();
 
 // Load GLTF model
 const loader = new GLTFLoader();
-loader.load('cliff.gltf', (gltf) => {
+loader.load('tree.glb', (gltf) => {
   const mesh = gltf.scene;
   scene.add(mesh);
 

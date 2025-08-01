@@ -1,20 +1,43 @@
-import { BufferGeometryLoader, Mesh, MeshNormalMaterial, WebGLRenderer } from 'three';
+import { Mesh, MeshNormalMaterial, WebGLRenderer } from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTextureAtlas, exportTextureFromRenderTarget } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
 renderer.setSize(512, 512); // Set a reasonable size for export
 
-// Load geometry
-const loader = new BufferGeometryLoader();
-loader.load('https://threejs.org/examples/models/json/suzanne_buffergeometry.json', (geometry) => {
-  geometry.computeVertexNormals();
-  const target = new Mesh(geometry, new MeshNormalMaterial());
+// Load GLTF model
+const loader = new GLTFLoader();
+loader.load(
+  'tree.glb', // Use local asset
+  (gltf) => {
+    const mesh = gltf.scene;
+    
+    // Apply normal material for consistent export
+    mesh.traverse((child) => {
+      if (child instanceof Mesh) {
+        child.material = new MeshNormalMaterial();
+      }
+    });
 
-  target.updateMatrixWorld(true);
+    mesh.updateMatrixWorld(true);
 
-  const atlas = createTextureAtlas({ renderer, target, useHemiOctahedron: true, spritesPerSide: 16 });
+    const atlas = createTextureAtlas({ 
+      renderer, 
+      target: mesh, 
+      useHemiOctahedron: true, 
+      spritesPerSide: 16 
+    });
 
-  exportTextureFromRenderTarget(renderer, atlas.renderTarget, 'albedo', 0);
-  exportTextureFromRenderTarget(renderer, atlas.renderTarget, 'normalDepth', 1);
-});
+    exportTextureFromRenderTarget(renderer, atlas.renderTarget, 'albedo', 0);
+    exportTextureFromRenderTarget(renderer, atlas.renderTarget, 'normalDepth', 1);
+    
+    console.log('Texture atlas exported successfully');
+  },
+  (progress) => {
+    console.log('Loading progress:', (progress.loaded / progress.total * 100) + '%');
+  },
+  (error) => {
+    console.error('Error loading GLTF model:', error);
+  }
+);

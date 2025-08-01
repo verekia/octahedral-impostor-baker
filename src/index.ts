@@ -1,6 +1,6 @@
 import { 
-  FloatType, GLSL3, IUniform, LinearFilter, Material, Mesh, MeshStandardMaterial, 
-  NearestFilter, NoColorSpace, Object3D, OrthographicCamera, PlaneGeometry, ShaderMaterial, 
+  GLSL3, HalfFloatType, IUniform, LinearFilter, LinearSRGBColorSpace, Material, Matrix4, Mesh, MeshStandardMaterial, 
+  NearestFilter, Object3D, OrthographicCamera, PlaneGeometry, ShaderMaterial, 
   Sphere, Texture, UnsignedByteType, Vector2, Vector3, Vector4, WebGLRenderer, WebGLRenderTarget 
 } from 'three';
 
@@ -117,8 +117,11 @@ const atlasFragmentShader = `
 precision highp float;
 precision highp int;
 
+// #include <alphatest_pars_fragment>
+uniform float alphaTest;
 uniform mat3 normalMatrix;
-uniform sampler2D u_albedo_tex;
+uniform sampler2D map;
+uniform vec3 diffuse;
 
 varying vec2 vUv;
 varying vec3 vNormal;
@@ -128,20 +131,23 @@ layout(location = 0) out vec4 gAlbedo;
 layout(location = 1) out vec4 gNormalDepth;
 
 void main() {
-    vec4 albedo = texture(u_albedo_tex, vUv);
+    vec4 albedo = vec4(diffuse, 1.0); // Use material color as base
+    
+    #ifdef HAS_MAP
+        vec4 texColor = texture(map, vUv);
+        albedo = vec4(diffuse * texColor.rgb, texColor.a);
+    #endif
+    
+    if (albedo.a < alphaTest) discard;
 
     vec3 normal = normalize( vNormal );
     #ifdef DOUBLE_SIDED
         float faceDirection = gl_FrontFacing ? 1.0 : -1.0;
         normal *= faceDirection;
     #endif
-
     normal = normalize(normalMatrix * normal);
 
     float fragCoordZ = 0.5 * vHighPrecisionZW[0] / vHighPrecisionZW[1] + 0.5;
-
-    if(albedo.a < 0.5)
-        discard;
 
     gAlbedo = linearToOutputTexel(albedo);
     gNormalDepth = vec4(normal, 1.0 - fragCoordZ);
@@ -186,7 +192,7 @@ const atlasBSphere = new Sphere();
 const atlasOldScissor = new Vector4();
 const atlasOldViewport = new Vector4();
 const atlasCoords = new Vector2();
-const userDataMaterialKey = 'ez_originalMaterial';
+const userDataMaterialKey = 'octahedral_originalMaterial';
 
 export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtlas {
   const { renderer, target, useHemiOctahedron } = params;
@@ -235,15 +241,43 @@ export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtl
   }
 
   function createMaterial(material: Material): ShaderMaterial {
+    const sourceMaterial = material as any;
+    
+    // Handle different texture properties that might contain the albedo map
+    const diffuseMap = sourceMaterial.map || sourceMaterial.baseColorTexture || null;
+    
+    // Extract material color - handle different material types
+    let diffuseColor = new Vector3(1, 1, 1); // Default white
+    if (sourceMaterial.color) {
+      diffuseColor = new Vector3(sourceMaterial.color.r, sourceMaterial.color.g, sourceMaterial.color.b);
+    } else if (sourceMaterial.diffuse) {
+      diffuseColor = new Vector3(sourceMaterial.diffuse.r, sourceMaterial.diffuse.g, sourceMaterial.diffuse.b);
+    } else if (sourceMaterial.baseColorFactor) {
+      diffuseColor = new Vector3(sourceMaterial.baseColorFactor[0], sourceMaterial.baseColorFactor[1], sourceMaterial.baseColorFactor[2]);
+    }
+    
+    // Use the original alphaTest value, or 0.1 as a more permissive default for leaves
+    const alphaTestValue = sourceMaterial.alphaTest !== undefined ? sourceMaterial.alphaTest : 0.1;
+    
     const uniforms: { [uniform: string]: IUniform } = {
-      u_albedo_tex: { value: (material as MeshStandardMaterial).map }
+      map: { value: diffuseMap },
+      diffuse: { value: diffuseColor },
+      alphaTest: { value: alphaTestValue }
     };
+
+    const defines: { [key: string]: any } = {};
+    if (diffuseMap) {
+      defines.HAS_MAP = true;
+    }
 
     return new ShaderMaterial({
       uniforms,
       vertexShader: atlasVertexShader,
       fragmentShader: atlasFragmentShader,
-      glslVersion: GLSL3
+      defines,
+      glslVersion: GLSL3,
+      side: material.side,
+      transparent: material.transparent
     });
   }
 
@@ -304,8 +338,8 @@ export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtl
 
     renderTarget.textures[normalDepth].minFilter = NearestFilter;
     renderTarget.textures[normalDepth].magFilter = NearestFilter;
-    renderTarget.textures[normalDepth].type = FloatType;
-    renderTarget.textures[albedo].colorSpace = NoColorSpace;
+    renderTarget.textures[normalDepth].type = HalfFloatType;
+    renderTarget.textures[normalDepth].colorSpace = LinearSRGBColorSpace;
 
     renderer.setRenderTarget(renderTarget);
     renderer.setScissorTest(true);
@@ -333,15 +367,39 @@ const shaderChunkMapFragment = `
 //#include <map_fragment>
 float spriteSize = 1.0 / spritesPerSide;
 
-vec2 uv1 = parallaxUV(vSpriteUV1, vSprite1, vSpriteViewDir1, spriteSize, vSpritesWeight.x);
-vec2 uv2 = parallaxUV(vSpriteUV2, vSprite2, vSpriteViewDir2, spriteSize, vSpritesWeight.y);
-vec2 uv3 = parallaxUV(vSpriteUV3, vSprite3, vSpriteViewDir3, spriteSize, vSpritesWeight.z);
+vec2 uv1 = getUV(vSpriteUV1, vSprite1, spriteSize);
+vec2 uv2 = getUV(vSpriteUV2, vSprite2, spriteSize);
+vec2 uv3 = getUV(vSpriteUV3, vSprite3, spriteSize);
 
-vec4 blendedColor = blendImpostorSamples(uv1, uv2, uv3);
+vec4 sprite1, sprite2, sprite3;
+float test = 1.0 - alphaClamp;
 
-if(blendedColor.a <= alphaClamp) discard;
+if (vSpritesWeight.x >= test) {
+  sprite1 = texture(map, uv1);
+  if (sprite1.a <= alphaClamp) discard;
+  sprite2 = texture(map, uv2);
+  sprite3 = texture(map, uv3);
+} else if (vSpritesWeight.y >= test) {
+  sprite2 = texture(map, uv2);
+  if (sprite2.a <= alphaClamp) discard;
+  sprite1 = texture(map, uv1);
+  sprite3 = texture(map, uv3);
+} else if (vSpritesWeight.z >= test) {
+  sprite3 = texture(map, uv3);
+  if (sprite3.a <= alphaClamp) discard;
+  sprite1 = texture(map, uv1);
+  sprite2 = texture(map, uv2);
+} else {
+  sprite1 = texture(map, uv1);
+  sprite2 = texture(map, uv2);
+  sprite3 = texture(map, uv3);
+}
 
-#ifndef EZ_TRANSPARENT
+vec4 blendedColor = sprite1 * vSpritesWeight.x + sprite2 * vSpritesWeight.y + sprite3 * vSpritesWeight.z;
+
+if (blendedColor.a <= alphaClamp) discard;
+
+#ifndef OCTAHEDRAL_TRANSPARENT
 blendedColor = vec4(vec3(blendedColor.rgb) / blendedColor.a, 1.0);
 #endif
 
@@ -358,14 +416,9 @@ const shaderChunkParamsFragment = `
 #include <clipping_planes_pars_fragment>
 
 uniform float spritesPerSide;
-uniform float parallaxScale;
 uniform float alphaClamp;
 
-#ifdef EZ_USE_NORMAL
-uniform mat3 normalMatrix;
-#endif
-
-#ifdef EZ_USE_ORM
+#ifdef OCTAHEDRAL_USE_ORM
 uniform sampler2D ormMap;
 #endif
 
@@ -376,24 +429,8 @@ flat varying vec2 vSprite3;
 varying vec2 vSpriteUV1;
 varying vec2 vSpriteUV2;
 varying vec2 vSpriteUV3;
-varying vec2 vSpriteViewDir1;
-varying vec2 vSpriteViewDir2;
-varying vec2 vSpriteViewDir3;
 
-#ifdef EZ_USE_NORMAL
-flat varying vec3 vSpriteNormal1;
-flat varying vec3 vSpriteNormal2;
-flat varying vec3 vSpriteNormal3;
-#endif
-
-vec4 blendImpostorSamples(vec2 uv1, vec2 uv2, vec2 uv3) {
-  vec4 sprite1 = texture(map, uv1);
-  vec4 sprite2 = texture(map, uv2);
-  vec4 sprite3 = texture(map, uv3);
-
-  return sprite1 * vSpritesWeight.x + sprite2 * vSpritesWeight.y + sprite3 * vSpritesWeight.z;
-}
-
+#ifdef OCTAHEDRAL_USE_NORMAL
 vec3 blendNormals(vec2 uv1, vec2 uv2, vec2 uv3) {
   vec4 normalDepth1 = texture2D(normalMap, uv1);
   vec4 normalDepth2 = texture2D(normalMap, uv2);
@@ -401,22 +438,18 @@ vec3 blendNormals(vec2 uv1, vec2 uv2, vec2 uv3) {
 
   return normalize(normalDepth1.xyz * vSpritesWeight.x + normalDepth2.xyz * vSpritesWeight.y + normalDepth3.xyz * vSpritesWeight.z);
 }
+#endif
 
-vec2 parallaxUV(vec2 uv_f, vec2 frame, vec2 xy_f, float frame_size, float weight) {
+vec2 getUV(vec2 uv_f, vec2 frame, float frame_size) {
   uv_f = clamp(uv_f, vec2(0), vec2(1));
-	vec2 uv_quad = frame_size * (frame + uv_f);
-  float n_depth = max(0.0, 0.5 - texture(normalMap, uv_quad).a);
-
-  uv_f = xy_f * n_depth * parallaxScale * (1.0 - weight) + uv_f;
-	uv_f = clamp(uv_f, vec2(0), vec2(1));
-	uv_f =  frame_size * (frame + uv_f);
-	return clamp(uv_f, vec2(0), vec2(1));
+	return frame_size * (frame + uv_f);
 }
 `;
 
 const shaderChunkParamsVertex = `
 #include <clipping_planes_pars_vertex>
 
+uniform mat4 transform;
 uniform float spritesPerSide;
 
 flat varying vec4 vSpritesWeight;
@@ -426,18 +459,9 @@ flat varying vec2 vSprite3;
 varying vec2 vSpriteUV1;
 varying vec2 vSpriteUV2;
 varying vec2 vSpriteUV3;
-varying vec2 vSpriteViewDir1;
-varying vec2 vSpriteViewDir2;
-varying vec2 vSpriteViewDir3;
-
-#ifdef EZ_USE_NORMAL
-flat varying vec3 vSpriteNormal1;
-flat varying vec3 vSpriteNormal2;
-flat varying vec3 vSpriteNormal3;
-#endif
 
 vec2 encodeDirection(vec3 direction) {
-  #ifdef EZ_USE_HEMI_OCTAHEDRON
+  #ifdef OCTAHEDRAL_USE_HEMI_OCTAHEDRON
 
   vec3 octahedron = direction / dot(direction, sign(direction));
   return vec2(1.0 + octahedron.x + octahedron.z, 1.0 + octahedron.z - octahedron.x) * 0.5;
@@ -452,7 +476,7 @@ vec2 encodeDirection(vec3 direction) {
 vec3 decodeDirection(vec2 gridIndex, vec2 spriteCountMinusOne) {
   vec2 gridUV = gridIndex / spriteCountMinusOne;
 
-  #ifdef EZ_USE_HEMI_OCTAHEDRON
+  #ifdef OCTAHEDRAL_USE_HEMI_OCTAHEDRON
 
   vec3 position = vec3(gridUV.x - gridUV.y, 0.0, -1.0 + gridUV.x + gridUV.y);
   position.y = 1.0 - abs(position.x) - abs(position.z);
@@ -472,7 +496,7 @@ void computePlaneBasis(vec3 normal, out vec3 tangent, out vec3 bitangent) {
   if(normal.y > 0.999)
     up = vec3(-1.0, 0.0, 0.0);
 
-  #ifndef EZ_USE_HEMI_OCTAHEDRON
+  #ifndef OCTAHEDRAL_USE_HEMI_OCTAHEDRON
   if(normal.y < -0.999)
     up = vec3(1.0, 0.0, 0.0);
   #endif
@@ -493,6 +517,12 @@ void computeSpritesWeight(vec2 gridFract) {
 
 vec2 projectToPlaneUV(vec3 normal, vec3 tangent, vec3 bitangent, vec3 cameraPosition, vec3 viewDir) {
   float denom = dot(viewDir, normal);
+  
+  // Avoid division by zero when view direction is parallel to plane
+  if (abs(denom) < 1e-6) {
+    return vec2(0.5); // Return center UV as fallback
+  }
+  
   float t = -dot(cameraPosition, normal) / denom;
 
   vec3 hit = cameraPosition + viewDir * t;
@@ -510,7 +540,13 @@ const shaderChunkVertex = `
 
 vec2 spritesMinusOne = vec2(spritesPerSide - 1.0);
 
+#if defined USE_INSTANCING || defined USE_INSTANCING_INDIRECT
+mat4 instanceMatrix2 = instanceMatrix * transform;
+vec3 cameraPosLocal = (inverse(instanceMatrix2 * modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+#else
 vec3 cameraPosLocal = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+#endif
+
 vec3 cameraDir = normalize(cameraPosLocal);
 
 vec3 projectedVertex = projectVertex(cameraDir);
@@ -531,12 +567,6 @@ vec3 spriteNormal1 = decodeDirection(vSprite1, spritesMinusOne);
 vec3 spriteNormal2 = decodeDirection(vSprite2, spritesMinusOne);
 vec3 spriteNormal3 = decodeDirection(vSprite3, spritesMinusOne);
 
-#ifdef EZ_USE_NORMAL
-vSpriteNormal1 = spriteNormal1;
-vSpriteNormal2 = spriteNormal2;
-vSpriteNormal3 = spriteNormal3;
-#endif
-
 vec3 planeX1, planeY1, planeX2, planeY2, planeX3, planeY3;
 computePlaneBasis(spriteNormal1, planeX1, planeY1);
 computePlaneBasis(spriteNormal2, planeX2, planeY2);
@@ -546,16 +576,18 @@ vSpriteUV1 = projectToPlaneUV(spriteNormal1, planeX1, planeY1, cameraPosLocal, v
 vSpriteUV2 = projectToPlaneUV(spriteNormal2, planeX2, planeY2, cameraPosLocal, viewDirLocal);
 vSpriteUV3 = projectToPlaneUV(spriteNormal3, planeX3, planeY3, cameraPosLocal, viewDirLocal);
 
-vSpriteViewDir1 = projectDirectionToBasis(-viewDirLocal, spriteNormal1, planeX1, planeY1).xy;
-vSpriteViewDir2 = projectDirectionToBasis(-viewDirLocal, spriteNormal2, planeX2, planeY2).xy;
-vSpriteViewDir3 = projectDirectionToBasis(-viewDirLocal, spriteNormal3, planeX3, planeY3).xy;
+vec4 mvPosition = vec4(projectedVertex, 1.0);
 
-vec4 mvPosition = modelViewMatrix * vec4(projectedVertex, 1.0);
+#if defined USE_INSTANCING || defined USE_INSTANCING_INDIRECT
+    mvPosition = instanceMatrix2 * mvPosition;
+#endif
+
+mvPosition = modelViewMatrix * mvPosition;
 
 gl_Position = projectionMatrix * mvPosition;
 `;
 
-export type OctahedralImpostorDefinesKeys = 'EZ_USE_HEMI_OCTAHEDRON' | 'EZ_USE_NORMAL' | 'EZ_USE_ORM' | 'EZ_TRANSPARENT';
+export type OctahedralImpostorDefinesKeys = 'OCTAHEDRAL_USE_HEMI_OCTAHEDRON' | 'OCTAHEDRAL_USE_NORMAL' | 'OCTAHEDRAL_USE_ORM' | 'OCTAHEDRAL_TRANSPARENT';
 export type OctahedralImpostorDefines = { [key in OctahedralImpostorDefinesKeys]?: boolean };
 
 export type UniformValue<T> = T extends IUniform<infer U> ? U : never;
@@ -563,8 +595,8 @@ export type MaterialConstructor<T extends Material> = new () => T;
 
 export interface OctahedralImpostorUniforms {
   spritesPerSide: IUniform<number>;
-  parallaxScale: IUniform<number>;
   alphaClamp: IUniform<number>;
+  transform: IUniform<Matrix4>;
 }
 
 export interface CreateOctahedralImpostor<T extends Material> extends OctahedralImpostorMaterial, CreateTextureAtlasParams {
@@ -573,15 +605,16 @@ export interface CreateOctahedralImpostor<T extends Material> extends Octahedral
 
 export interface OctahedralImpostorMaterial {
   transparent?: boolean;
-  parallaxScale?: number;
   alphaClamp?: number;
+  scale?: number;
+  translation?: Vector3;
 }
 
 declare module 'three' {
   interface Material extends OctahedralImpostorMaterial {
     isOctahedralImpostorMaterial: boolean;
-    ezImpostorUniforms?: OctahedralImpostorUniforms;
-    ezImpostorDefines?: OctahedralImpostorDefines;
+    octahedralImpostorUniforms?: OctahedralImpostorUniforms;
+    octahedralImpostorDefines?: OctahedralImpostorDefines;
   }
 }
 
@@ -598,16 +631,18 @@ export function createOctahedralImpostorMaterial<T extends Material>(parameters:
   (material as any).map = albedo;
   (material as any).normalMap = normalDepth;
 
-  material.ezImpostorDefines = {};
+  material.octahedralImpostorDefines = {};
 
-  if (parameters.useHemiOctahedron) material.ezImpostorDefines.EZ_USE_HEMI_OCTAHEDRON = true;
-  if (parameters.transparent) material.ezImpostorDefines.EZ_TRANSPARENT = true;
-  material.ezImpostorDefines.EZ_USE_NORMAL = true;
+  if (parameters.useHemiOctahedron) material.octahedralImpostorDefines.OCTAHEDRAL_USE_HEMI_OCTAHEDRON = true;
+  if (parameters.transparent) material.octahedralImpostorDefines.OCTAHEDRAL_TRANSPARENT = true;
+  material.octahedralImpostorDefines.OCTAHEDRAL_USE_NORMAL = true;
 
-  material.ezImpostorUniforms = {
-    spritesPerSide: { value: parameters.spritesPerSide ?? 16 },
-    parallaxScale: { value: parameters.parallaxScale ?? 0.1 },
-    alphaClamp: { value: parameters.alphaClamp ?? 0.5 }
+  const { scale, translation, spritesPerSide, alphaClamp } = parameters;
+
+  material.octahedralImpostorUniforms = {
+    spritesPerSide: { value: spritesPerSide ?? 16 },
+    alphaClamp: { value: alphaClamp ?? 0.1 },
+    transform: { value: new Matrix4().makeScale(scale || 1, scale || 1, scale || 1).setPosition(translation || new Vector3()) }
   };
 
   overrideMaterialCompilation(material);
@@ -619,8 +654,8 @@ function overrideMaterialCompilation(material: Material): void {
   const onBeforeCompileBase = material.onBeforeCompile;
 
   material.onBeforeCompile = (shader, renderer) => {
-    shader.defines = { ...shader.defines, ...material.ezImpostorDefines };
-    shader.uniforms = { ...shader.uniforms, ...material.ezImpostorUniforms };
+    shader.defines = { ...shader.defines, ...material.octahedralImpostorDefines };
+    shader.uniforms = { ...shader.uniforms, ...material.octahedralImpostorUniforms };
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <clipping_planes_pars_vertex>', shaderChunkParamsVertex)
@@ -638,12 +673,12 @@ function overrideMaterialCompilation(material: Material): void {
   const customProgramCacheKeyBase = material.customProgramCacheKey;
 
   material.customProgramCacheKey = () => {
-    const hemiOcta = !!material.ezImpostorDefines.EZ_USE_HEMI_OCTAHEDRON;
-    const useNormal = !!material.ezImpostorDefines.EZ_USE_NORMAL;
-    const useOrm = !!material.ezImpostorDefines.EZ_USE_ORM;
+    const hemiOcta = !!material.octahedralImpostorDefines.OCTAHEDRAL_USE_HEMI_OCTAHEDRON;
+    const useNormal = !!material.octahedralImpostorDefines.OCTAHEDRAL_USE_NORMAL;
+    const useOrm = !!material.octahedralImpostorDefines.OCTAHEDRAL_USE_ORM;
     const transparent = !!material.transparent;
 
-    return `ez_${hemiOcta}_${transparent}_${useNormal}_${useOrm}_${customProgramCacheKeyBase.call(material)}`;
+    return `octahedral_${hemiOcta}_${transparent}_${useNormal}_${useOrm}_${customProgramCacheKeyBase.call(material)}`;
   };
 }
 
@@ -663,6 +698,10 @@ export class OctahedralImpostor<M extends Material = Material> extends Mesh<Plan
 
       this.scale.multiplyScalar(sphere.radius * 2);
       this.position.copy(sphere.center);
+
+      // Set scale and translation for instanced mesh support
+      (materialOrParams as CreateOctahedralImpostor<M>).scale = sphere.radius * 2;
+      (materialOrParams as CreateOctahedralImpostor<M>).translation = sphere.center.clone();
 
       materialOrParams = createOctahedralImpostorMaterial(materialOrParams as CreateOctahedralImpostor<M>);
     }

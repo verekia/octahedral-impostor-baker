@@ -1,6 +1,7 @@
 import { DirectionalLight, MeshLambertMaterial, OrthographicCamera, Scene, WebGLRenderer } from 'three';
-import { GLTFLoader, OrbitControls } from 'three/examples/jsm/Addons.js';
-import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
 import { OctahedralImpostor } from '../src/index.js';
 
@@ -32,7 +33,7 @@ controls.update();
 
 // Load GLTF model
 const loader = new GLTFLoader();
-loader.load('palm.gltf', (gltf) => {
+loader.load('tree.glb', (gltf) => {
   const mesh = gltf.scene;
 
   const directionalLight = new DirectionalLight('white', 3);
@@ -62,7 +63,6 @@ loader.load('palm.gltf', (gltf) => {
     transparent: true,
     spritesPerSide: 16,
     textureSize: 8192,
-    parallaxScale: 0,
     baseType: MeshLambertMaterial
   });
   scene.add(impostor);
@@ -81,8 +81,7 @@ loader.load('palm.gltf', (gltf) => {
 
   const config = { showImpostor: true };
   const gui = new GUI();
-  gui.add(impostor.material.ezImpostorUniforms.parallaxScale, 'value', 0, 0.3, 0.01).name('Parallax Scale');
-  gui.add(impostor.material.ezImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
+  gui.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
   gui.add(impostor.material, 'transparent').onChange((value) => impostor.material.needsUpdate = true);
   gui.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;
