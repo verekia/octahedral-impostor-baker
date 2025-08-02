@@ -98,9 +98,13 @@ loader.load('tree.glb', (gltf) => {
 
   let alphaClampController: any;
   let transparentController: any;
+  let hybridDistanceController: any;
 
   function regenerateImpostor() {
     console.log('Starting regeneration...');
+    
+    // Store hybridDistance value before removing old impostor
+    const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.5;
     
     // Remove old impostor
     scene.remove(impostor);
@@ -137,10 +141,14 @@ loader.load('tree.glb', (gltf) => {
       if (alphaClampController) {
         alphaClampController.object = impostor.material.octahedralImpostorUniforms.alphaClamp;
       }
+      if (hybridDistanceController) {
+        hybridDistanceController.object = impostor.material.octahedralImpostorUniforms.hybridDistance;
+      }
       
       // Apply current material settings to new impostor
       impostor.material.transparent = materialConfig.transparent;
       impostor.material.octahedralImpostorUniforms.disableBlending.value = materialConfig.disableBlending ? 1.0 : 0.0;
+      impostor.material.octahedralImpostorUniforms.hybridDistance.value = currentHybridDistance;
       impostor.material.needsUpdate = true;
       
       // Update info display
@@ -196,6 +204,8 @@ loader.load('tree.glb', (gltf) => {
   materialFolder.add(materialConfig, 'disableBlending').name('Disable Triplanar Blending').onChange((value) => {
     impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
   });
+  
+  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 50, 0.5).name('Hybrid Distance');
   
   materialFolder.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;

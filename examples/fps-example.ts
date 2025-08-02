@@ -233,6 +233,7 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
   const gui = new GUI();
   
   let alphaClampController: any;
+  let hybridDistanceController: any;
   let debugWireframe: THREE.LineSegments | null = null;
   
   // Add proper directional light for orbital mode (like the original example)
@@ -302,6 +303,9 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
   function regenerateImpostor() {
     console.log('Starting regeneration...');
     
+    // Store hybridDistance value before removing old impostor
+    const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.5;
+    
     // Remove old impostor and debug wireframe
     scene.remove(impostor);
     if (debugWireframe) {
@@ -347,10 +351,14 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
       if (alphaClampController) {
         alphaClampController.object = impostor.material.octahedralImpostorUniforms.alphaClamp;
       }
+      if (hybridDistanceController) {
+        hybridDistanceController.object = impostor.material.octahedralImpostorUniforms.hybridDistance;
+      }
       
       // Apply current material settings to new impostor
       impostor.material.transparent = materialConfig.transparent;
       impostor.material.octahedralImpostorUniforms.disableBlending.value = materialConfig.disableBlending ? 1.0 : 0.0;
+      impostor.material.octahedralImpostorUniforms.hybridDistance.value = currentHybridDistance;
       impostor.material.needsUpdate = true;
       
       // Update info display
@@ -445,6 +453,8 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
     impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
   });
   
+  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 50, 0.5).name('Hybrid Distance');
+  
   materialFolder.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;
     impostor.visible = value;
@@ -498,7 +508,7 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
   // Camera controls
   const cameraFolder = gui.addFolder('FPS Camera');
   cameraFolder.add(fpsController, 'moveSpeed', 1, 20, 0.5).name('Move Speed');
-  cameraFolder.add(fpsController, 'jumpVelocity', 5, 20, 0.5).name('Jump Velocity');
+  cameraFolder.add(fpsController, 'jumpVelocity', 5, 50, 0.5).name('Jump Velocity');
   cameraFolder.add(fpsController, 'gravityForce', 10, 50, 1).name('Gravity');
   
   // Fix pointer lock issue with GUI
