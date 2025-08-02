@@ -226,7 +226,7 @@ const IMPOSTOR_VERTEX_PARAMS = /* glsl */ `
     return normalize(position);
   }
 
-  void computePlaneBasis(vec3 normal, out vec3 tangent, out vec3 bitangent) {
+  vec3 projectVertex(vec3 normal) {
     vec3 up = vec3(0.0, 1.0, 0.0);
 
     if (normal.y > 0.999) {
@@ -238,13 +238,8 @@ const IMPOSTOR_VERTEX_PARAMS = /* glsl */ `
       }
     #endif
 
-    tangent = normalize(cross(up, normal));
-    bitangent = cross(normal, tangent);
-  }
-
-  vec3 projectVertex(vec3 normal) {
-    vec3 tangent, bitangent;
-    computePlaneBasis(normal, tangent, bitangent);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
     return tangent * position.x + bitangent * position.y;
   }
 
@@ -257,19 +252,6 @@ const IMPOSTOR_VERTEX_PARAMS = /* glsl */ `
     );
   }
 
-  vec2 projectToPlaneUV(vec3 normal, vec3 tangent, vec3 bitangent, vec3 cameraPosition, vec3 viewDir) {
-    float denom = dot(viewDir, normal);
-    
-    // Avoid division by zero when view direction is parallel to plane
-    if (abs(denom) < 1e-6) {
-      return vec2(0.5);
-    }
-    
-    float t = -dot(cameraPosition, normal) / denom;
-    vec3 hit = cameraPosition + viewDir * t;
-    vec2 uv = vec2(dot(tangent, hit), dot(bitangent, hit));
-    return uv + 0.5;
-  }
 `;
 
 /**
@@ -290,36 +272,22 @@ const IMPOSTOR_VERTEX_TRANSFORM = /* glsl */ `
   // Calculate distance from impostor center to camera
   float distance = length(cameraPosLocal);
   
-  // Stable hybrid rotation with reduced jittering
-  float horizontalDist = length(vec2(cameraPosLocal.x, cameraPosLocal.z));
-  float verticalOffset = abs(cameraPosLocal.y);
+  // Simple elevation-based rotation choice
+  float verticalOffset = cameraPosLocal.y; // Keep sign for above/below detection
   
-  // Add small deadzone for micro-movements to reduce jitter
-  float verticalDeadzone = 0.2; // Ignore very small Y changes
-  float stabilizedVertical = max(0.0, verticalOffset - verticalDeadzone);
+  // Binary decision: are we clearly above the impostor?
+  bool isAbove = verticalOffset > hybridDistance;
   
-  // Base distance factor with slight smoothing for stability
-  float baseFactor = smoothstep(hybridDistance * 0.8, hybridDistance * 1.2, distance);
-  
-  // Elevation factor kicks in more readily
-  float elevationFactor = clamp(stabilizedVertical / max(horizontalDist, 1.5), 0.0, 1.0);
-  
-  // More responsive elevation thresholds
-  float horizontalThreshold = hybridDistance * 0.25;
-  float elevationThreshold = 1.0; // Lower threshold for elevation
-  float horizontalWeight = smoothstep(0.0, horizontalThreshold, horizontalDist);
-  float elevationWeight = smoothstep(0.0, elevationThreshold, stabilizedVertical);
-  
-  // Keep stronger elevation contribution for overhead views
-  float elevationContribution = elevationFactor * horizontalWeight * elevationWeight * 0.75;
-  float blendFactor = max(baseFactor, elevationContribution);
-  
-  vec3 uprightDir = normalize(vec3(cameraPosLocal.x, 0.0, cameraPosLocal.z));
-  vec3 fullDir = normalize(cameraPosLocal);
-  vec3 cameraDir = mix(uprightDir, fullDir, blendFactor);
+  vec3 cameraDir;
+  if (isAbove) {
+    // Above threshold: allow full 3D rotation to see top properly
+    cameraDir = normalize(cameraPosLocal);
+  } else {
+    // At/below threshold: Y-locked horizontal rotation only
+    cameraDir = normalize(vec3(cameraPosLocal.x, 0.0, cameraPosLocal.z));
+  }
 
   vec3 projectedVertex = projectVertex(cameraDir);
-  vec3 viewDirLocal = normalize(projectedVertex - cameraPosLocal);
 
   vec2 grid = encodeDirection(cameraDir) * spritesMinusOne;
   vec2 gridFloor = min(floor(grid), spritesMinusOne);
@@ -331,18 +299,10 @@ const IMPOSTOR_VERTEX_TRANSFORM = /* glsl */ `
   vSprite2 = min(vSprite1 + mix(vec2(0.0, 1.0), vec2(1.0, 0.0), vSpritesWeight.w), spritesMinusOne);
   vSprite3 = min(vSprite1 + vec2(1.0), spritesMinusOne);
 
-  vec3 spriteNormal1 = decodeDirection(vSprite1, spritesMinusOne);
-  vec3 spriteNormal2 = decodeDirection(vSprite2, spritesMinusOne);
-  vec3 spriteNormal3 = decodeDirection(vSprite3, spritesMinusOne);
-
-  vec3 planeX1, planeY1, planeX2, planeY2, planeX3, planeY3;
-  computePlaneBasis(spriteNormal1, planeX1, planeY1);
-  computePlaneBasis(spriteNormal2, planeX2, planeY2);
-  computePlaneBasis(spriteNormal3, planeX3, planeY3);
-
-  vSpriteUV1 = projectToPlaneUV(spriteNormal1, planeX1, planeY1, cameraPosLocal, viewDirLocal);
-  vSpriteUV2 = projectToPlaneUV(spriteNormal2, planeX2, planeY2, cameraPosLocal, viewDirLocal);
-  vSpriteUV3 = projectToPlaneUV(spriteNormal3, planeX3, planeY3, cameraPosLocal, viewDirLocal);
+  // Use standard plane UVs - perspective was already baked into the atlas
+  vSpriteUV1 = uv;
+  vSpriteUV2 = uv;
+  vSpriteUV3 = uv;
 
   vec4 mvPosition = vec4(projectedVertex, 1.0);
 
@@ -413,7 +373,7 @@ export function createOctahedralImpostorMaterial<T extends Material>(
         .setPosition(translation) 
     },
     disableBlending: { value: parameters.disableBlending ? 1.0 : 0.0 },
-    hybridDistance: { value: parameters.hybridDistance ?? 2.5 }
+    hybridDistance: { value: parameters.hybridDistance ?? 0.1 }
   };
 
   // Setup shader compilation override

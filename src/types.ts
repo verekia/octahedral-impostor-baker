@@ -62,7 +62,7 @@ export interface OctahedralImpostorUniforms {
   transform: IUniform<Matrix4>;
   /** Flag to disable triplanar blending */
   disableBlending: IUniform<number>;
-  /** Distance at which hybrid rotation transition is complete */
+  /** Elevation threshold above which impostor can tilt upward */
   hybridDistance: IUniform<number>;
 }
 
@@ -80,7 +80,7 @@ export interface OctahedralImpostorMaterial {
   translation?: Vector3;
   /** Whether to disable triplanar blending */
   disableBlending?: boolean;
-  /** Distance at which hybrid rotation transition is complete */
+  /** Elevation threshold above which impostor can tilt upward */
   hybridDistance?: number;
 }
 

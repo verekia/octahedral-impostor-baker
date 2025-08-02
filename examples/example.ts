@@ -205,7 +205,7 @@ loader.load('tree.glb', (gltf) => {
     impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
   });
   
-  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 50, 0.5).name('Hybrid Distance');
+  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
   
   materialFolder.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;

@@ -68,18 +68,7 @@ let impostor: OctahedralImpostor<THREE.MeshLambertMaterial>;
 let updateDebugWireframe: (() => void) | null = null;
 let updateStatusIndicator: (() => void) | null = null;
 
-// Add debug stats display
-const statsContainer = document.createElement('div');
-statsContainer.style.position = 'absolute';
-statsContainer.style.bottom = '10px';
-statsContainer.style.right = '10px';
-statsContainer.style.color = 'white';
-statsContainer.style.fontFamily = 'monospace';
-statsContainer.style.fontSize = '12px';
-statsContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-statsContainer.style.padding = '5px';
-statsContainer.style.borderRadius = '3px';
-document.body.appendChild(statsContainer);
+
 
 // Initialize the game
 async function init() {
@@ -408,7 +397,7 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
     controlMode: currentControlMode,
     switchMode: (mode: string) => {
       switchControlMode(mode as ControlMode);
-      controlConfig.controlMode = mode;
+      controlConfig.controlMode = mode as ControlMode;
     }
   };
   
@@ -453,7 +442,7 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
     impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
   });
   
-  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 50, 0.5).name('Hybrid Distance');
+  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
   
   materialFolder.add(config, 'showImpostor').onChange((value) => {
     mesh.visible = !value;
@@ -522,38 +511,11 @@ function setupGUIPointerLockFix(gui: GUI) {
   const guiDomElement = gui.domElement;
   let isGUIActive = false;
   
-  // Create status indicator
-  const statusIndicator = document.createElement('div');
-  statusIndicator.style.position = 'absolute';
-  statusIndicator.style.top = '10px';
-  statusIndicator.style.left = '10px';
-  statusIndicator.style.padding = '8px 12px';
-  statusIndicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-  statusIndicator.style.color = 'white';
-  statusIndicator.style.fontFamily = 'monospace';
-  statusIndicator.style.fontSize = '12px';
-  statusIndicator.style.borderRadius = '4px';
-  statusIndicator.style.zIndex = '10000';
-  statusIndicator.textContent = 'Click to enable mouse look';
-  document.body.appendChild(statusIndicator);
+
   
   // Update status indicator based on current mode
   function updateStatusIndicatorLocal() {
-    if (currentControlMode === ControlMode.FPS) {
-      if (isGUIActive) {
-        statusIndicator.textContent = 'GUI Active - Click outside to enable mouse look';
-        statusIndicator.style.backgroundColor = 'rgba(255, 165, 0, 0.7)';
-      } else if (document.pointerLockElement === renderer.domElement) {
-        statusIndicator.textContent = 'FPS Mode - Mouse Look Active (ESC to exit)';
-        statusIndicator.style.backgroundColor = 'rgba(0, 128, 0, 0.7)';
-      } else {
-        statusIndicator.textContent = 'FPS Mode - Click to enable mouse look';
-        statusIndicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-      }
-    } else {
-      statusIndicator.textContent = 'Orbital Mode - Use mouse to orbit camera';
-      statusIndicator.style.backgroundColor = 'rgba(0, 100, 200, 0.7)';
-    }
+    // Status indicator removed
   }
 
   // Track GUI interaction more robustly
@@ -565,7 +527,6 @@ function setupGUIPointerLockFix(gui: GUI) {
         document.exitPointerLock();
       }
     }
-    updateStatusIndicatorLocal();
   }
   
   // Assign to global variable so it can be called from switchControlMode
@@ -596,10 +557,7 @@ function setupGUIPointerLockFix(gui: GUI) {
     renderer.domElement.requestPointerLock();
   });
   
-  // Update status based on pointer lock state
-  document.addEventListener('pointerlockchange', () => {
-    updateStatusIndicatorLocal();
-  });
+
   
   // ESC key to exit pointer lock
   document.addEventListener('keydown', (event) => {
@@ -663,23 +621,12 @@ function animate(time: number) {
       updateDebugWireframe();
     }
 
-    // Update stats display
-    const playerPos = fpsController.position;
-    statsContainer.innerHTML = 
-      `FPS: ${Math.round(1 / deltaTime)}<br>` +
-      `Mode: FPS<br>` +
-      `Position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}<br>` +
-      `Physics Bodies: ${physics.rigidBodies.size}`;
+
   } else {
     // Update orbital controls
     orbitControls.update();
 
-    // Update stats display
-    const cameraPos = camera.position;
-    statsContainer.innerHTML = 
-      `FPS: ${Math.round(1 / deltaTime)}<br>` +
-      `Mode: Orbital<br>` +
-      `Camera: ${cameraPos.x.toFixed(1)}, ${cameraPos.y.toFixed(1)}, ${cameraPos.z.toFixed(1)}`;
+
   }
 
   // Render scene
