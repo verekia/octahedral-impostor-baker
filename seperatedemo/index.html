@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Octahedral Impostor - Standalone Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            z-index: 1000;
+        }
+        
+        .instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 14px;
+            line-height: 1.5;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            max-width: 300px;
+            z-index: 100;
+        }
+        
+        .instructions h3 {
+            margin: 0 0 10px 0;
+            color: #00ff88;
+        }
+        
+        .instructions ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        
+        .instructions li {
+            margin-bottom: 5px;
+        }
+        
+        .error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 500px;
+            text-align: center;
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">Loading Octahedral Impostor Demo...</div>
+    
+    <div class="instructions">
+        <h3>🎮 Controls</h3>
+        <ul>
+            <li><strong>WASD / Arrow Keys:</strong> Move</li>
+            <li><strong>Space:</strong> Jump</li>
+            <li><strong>Mouse:</strong> Look around (click to lock)</li>
+            <li><strong>ESC:</strong> Exit mouse lock</li>
+        </ul>
+        <p><strong>📝 Steps:</strong><br>
+        1. Load textures using GUI<br>
+        2. Click "Render Impostor"<br>
+        3. Explore with FPS controls</p>
+    </div>
+    
+    <div class="error" id="error">
+        <h3>⚠️ Error Loading Demo</h3>
+        <p id="error-message"></p>
+        <p>Please check the console for more details.</p>
+    </div>
+
+    <script type="module">
+        // Error handling
+        window.addEventListener('error', (event) => {
+            console.error('Script error:', event.error);
+            showError(`Script Error: ${event.error?.message || 'Unknown error'}`);
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('Unhandled promise rejection:', event.reason);
+            showError(`Promise Error: ${event.reason?.message || 'Unknown error'}`);
+        });
+
+        function showError(message) {
+            const loadingEl = document.getElementById('loading');
+            const errorEl = document.getElementById('error');
+            const errorMessageEl = document.getElementById('error-message');
+            
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (errorEl) {
+                errorEl.style.display = 'block';
+                if (errorMessageEl) {
+                    errorMessageEl.textContent = message;
+                }
+            }
+        }
+
+        // Main demo loading
+        async function loadDemo() {
+            try {
+                // Import and start the demo
+                await import('./demo.js');
+                
+                // Hide loading indicator after a short delay
+                setTimeout(() => {
+                    const loadingEl = document.getElementById('loading');
+                    if (loadingEl) {
+                        loadingEl.style.display = 'none';
+                    }
+                }, 1000);
+                
+                console.log('✅ Octahedral Impostor Demo loaded successfully');
+            } catch (error) {
+                console.error('❌ Failed to load demo:', error);
+                showError(error.message || 'Failed to load demo');
+            }
+        }
+
+        // Start loading
+        loadDemo();
+    </script>
+</body>
+</html>
