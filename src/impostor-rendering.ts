@@ -22,7 +22,7 @@ import {
   MaterialConstructor,
   DEFAULT_CONFIG,
   OctahedralMode
-} from './types.js';
+} from './octahedral-utils.js';
 import { createTextureAtlas } from './atlas-generation.js';
 import {
   calculateOptimalFraming,

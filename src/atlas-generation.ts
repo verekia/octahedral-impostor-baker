@@ -27,7 +27,7 @@ import {
 } from 'three';
 
 import { computeObjectBoundingSphere, hemiOctaGridToDir, octaGridToDir } from './octahedral-utils.js';
-import { CreateTextureAtlasParams, TextureAtlas, DEFAULT_CONFIG, OctahedralMode, CameraType } from './types.js';
+import { CreateTextureAtlasParams, TextureAtlas, DEFAULT_CONFIG, OctahedralMode, CameraType } from './octahedral-utils.js';
 
 // ============================================================================
 // ATLAS GENERATION SHADERS
