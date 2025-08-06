@@ -11,7 +11,6 @@ import {
   OrthographicCamera,
   Object3D,
   Quaternion,
-  Euler,
   MathUtils
 } from 'three';
 

@@ -7,19 +7,13 @@ import {
   OctahedralImpostor, 
   createOctahedralImpostorMaterial, 
   ImpostorPositioningMode
-} from '../src/impostor-rendering.js';
+} from './src/impostor-rendering.js';
 import { 
-  FramingMode,
-  ViewingAngle,
-  FRAMING_PRESETS,
-  calculateOptimalFraming,
-  applyCameraFraming,
-  animateCameraToFraming,
-  centerOrbitalCamera,
-  calculateOptimalViewingDistance
-} from '../src/camera-framing-utils.js';
-import { exportTextureAsPNG } from '../src/texture-export.js';
-import { OctahedralMode, CameraType } from '../src/octahedral-utils.js';
+  centerOrbitalCamera
+} from './src/camera-framing-utils.js';
+import { exportTextureAsPNG } from './src/texture-export.js';
+import { OctahedralMode, CameraType } from './src/octahedral-utils.js';
+import { AtlasVisualization } from './src/atlas-visualization.js';
 // Import Rapier directly - the plugins will handle the WASM loading
 import RAPIER from '@dimforge/rapier3d-compat';
 
@@ -247,7 +241,10 @@ class FPSController {
   setupPointerLock() {
     const that = this;
     this.domElement.ownerDocument.addEventListener('click', function() {
-      that.domElement.requestPointerLock();
+      // Only request pointer lock in FPS mode
+      if (currentControlMode === ControlMode.FPS) {
+        that.domElement.requestPointerLock();
+      }
     });
 
     const lockChangeEvent = () => {
@@ -260,7 +257,8 @@ class FPSController {
     };
 
     const moveCallback = (event: MouseEvent) => {
-      if (!this.isLocked) return;
+      // Don't process mouse movement if not locked or not in FPS mode
+      if (!this.isLocked || currentControlMode !== ControlMode.FPS) return;
 
       const movementX = event.movementX || 0;
       const movementY = event.movementY || 0;
@@ -622,18 +620,33 @@ enum ControlMode {
 
 // Initialize scene, camera, and renderer
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87CEEB);
+
+// Load skybox texture
+const textureLoader = new THREE.TextureLoader();
+let skyboxTexture: THREE.Texture | null = null;
+
+// Load the equirectangular skybox
+textureLoader.load(
+  './skybox.webp',
+  (texture) => {
+    texture.mapping = THREE.EquirectangularReflectionMapping;
+    skyboxTexture = texture;
+    scene.background = texture;
+    scene.environment = texture; // Also set as environment for realistic lighting
+    console.log('✅ Skybox loaded successfully');
+  },
+  undefined,
+  (error) => {
+    console.warn('⚠️ Failed to load skybox, using fallback color:', error);
+    scene.background = new THREE.Color(0x87CEEB);
+  }
+);
 
 // Two cameras for different modes
 const fpsCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-const aspect = window.innerWidth / window.innerHeight;
-const frustumSize = 20;
-const orbitalCamera = new THREE.OrthographicCamera(
-  frustumSize * aspect / -2, frustumSize * aspect / 2,
-  frustumSize / 2, frustumSize / -2,
-  1, 1000
-);
-orbitalCamera.position.z = 100;
+// Use perspective camera for orbital mode too - better for skybox rendering
+const orbitalCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+orbitalCamera.position.set(0, 10, 50);
 
 // Active camera reference
 let camera: THREE.Camera = fpsCamera;
@@ -643,7 +656,6 @@ const renderer = new THREE.WebGLRenderer({
   alpha: false,
   powerPreference: 'high-performance' 
 });
-renderer.setClearColor(0x87CEEB, 1);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
@@ -674,6 +686,7 @@ let currentMesh: THREE.Object3D | null = null;
 let currentAtlasConfig: any = null;
 let updateDebugWireframe: (() => void) | null = null;
 let updateStatusIndicator: (() => void) | null = null;
+let atlasVisualization: AtlasVisualization | null = null;
 
 // Preset models configuration
 const PRESET_MODELS = [
@@ -760,6 +773,17 @@ async function init() {
     console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
   }
 
+  // Initialize atlas visualization with responsive sizing
+  atlasVisualization = new AtlasVisualization({
+    showGrid: true,
+    indicatorColor: '#ff0000',
+    indicatorLineWidth: 2,
+    updateFrequency: 16
+  });
+
+  // Attach atlas visualization to the document (bottom right corner)
+  atlasVisualization.attachTo();
+
   // Setup GUI (always called regardless of model loading success)
   updateDebugWireframe = setupGUI(currentMesh, impostor, currentAtlasConfig);
 
@@ -799,9 +823,12 @@ function switchControlMode(mode: ControlMode) {
       groundMesh.visible = true;
     }
     
-    // Set background for FPS mode
-    scene.background = new THREE.Color(0x87CEEB);
-    renderer.setClearColor(0x87CEEB, 1);
+    // Set background for FPS mode (use skybox if available)
+    if (skyboxTexture) {
+      scene.background = skyboxTexture;
+    } else {
+      scene.background = new THREE.Color(0x87CEEB);
+    }
     
     console.log("Switched to FPS mode - Click to enable mouse look");
   } else {
@@ -827,13 +854,21 @@ function switchControlMode(mode: ControlMode) {
       groundMesh.visible = false;
     }
     
-    // Set background for orbital mode (like the original example)
-    scene.background = new THREE.Color('cyan');
-    renderer.setClearColor('cyan');
+    // Set background for orbital mode (use skybox if available)
+    if (skyboxTexture) {
+      scene.background = skyboxTexture;
+    } else {
+      scene.background = new THREE.Color('cyan');
+    }
     
-    // Exit pointer lock if active
+    // Exit pointer lock if active and ensure it's fully disabled
     if (document.pointerLockElement) {
       document.exitPointerLock();
+    }
+    
+    // Ensure FPS controller is not processing any mouse movement
+    if (fpsController) {
+      fpsController.isLocked = false;
     }
     
     console.log("Switched to Orbital mode");
@@ -907,6 +942,11 @@ async function loadModelFromFile(file: File, oldMesh: THREE.Object3D, oldImposto
     // Hide original mesh, show impostor
     mesh.visible = false;
     impostor.visible = true;
+    
+    // Update atlas visualization
+    if (atlasVisualization) {
+      atlasVisualization.setImpostor(impostor, camera, renderer);
+    }
     
     // If in orbital mode, center camera on impostor
     if (currentControlMode === ControlMode.ORBITAL) {
@@ -1031,6 +1071,11 @@ async function generateImpostorFromTextures(): Promise<void> {
     
     scene.add(impostor);
 
+    // Update atlas visualization
+    if (atlasVisualization) {
+      atlasVisualization.setImpostor(impostor, camera, renderer);
+    }
+
     console.log('✅ Successfully created impostor from imported textures');
   } catch (error) {
     console.error('❌ Failed to create impostor from textures:', error);
@@ -1118,6 +1163,11 @@ async function loadPresetModel(filename: string) {
     mesh.visible = false;
     impostor.visible = true;
     
+    // Update atlas visualization
+    if (atlasVisualization) {
+      atlasVisualization.setImpostor(impostor, camera, renderer);
+    }
+    
     // If in orbital mode, center camera on impostor and apply restrictions
     if (currentControlMode === ControlMode.ORBITAL) {
       const impostorCenter = impostor.position.clone();
@@ -1138,6 +1188,11 @@ async function loadPresetModel(filename: string) {
 
 function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor<THREE.MeshLambertMaterial> | null, atlasConfig: any) {
   const gui = new GUI();
+  
+  // Position GUI flush with right edge
+  gui.domElement.style.position = 'fixed';
+  gui.domElement.style.top = '0px';
+  gui.domElement.style.right = '0px';
   
   let alphaClampController: any;
   let hybridDistanceController: any;
@@ -1426,6 +1481,11 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
       
       scene.add(impostor);
       
+      // Update atlas visualization
+      if (atlasVisualization) {
+        atlasVisualization.setImpostor(impostor, camera, renderer);
+      }
+      
       // Recreate debug wireframe if it was enabled
       if (debugConfig.showQuadOutline) {
         debugWireframe = createDebugWireframe();
@@ -1683,6 +1743,11 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
     }
   });
   
+  // Set current impostor if available for atlas visualization
+  if (atlasVisualization && impostor) {
+    atlasVisualization.setImpostor(impostor, camera, renderer);
+  }
+  
   // Fix pointer lock issue with GUI
   setupGUIPointerLockFix(gui);
   
@@ -1749,6 +1814,14 @@ function setupGUIPointerLockFix(gui: GUI) {
     }
   });
   
+  // Additional safety: monitor pointer lock changes and force exit if in orbital mode
+  document.addEventListener('pointerlockchange', () => {
+    if (document.pointerLockElement && currentControlMode === ControlMode.ORBITAL) {
+      console.log("Forcing pointer lock exit: currently in orbital mode");
+      document.exitPointerLock();
+    }
+  });
+  
   // Override FPS controller's pointer lock to disable automatic locking
   fpsController.setupPointerLock = function() {
     const lockChangeEvent = () => {
@@ -1761,7 +1834,8 @@ function setupGUIPointerLockFix(gui: GUI) {
     };
 
     const moveCallback = (event: MouseEvent) => {
-      if (!this.isLocked) return;
+      // Don't process mouse movement if not locked or not in FPS mode
+      if (!this.isLocked || currentControlMode !== ControlMode.FPS) return;
 
       const movementX = event.movementX || 0;
       const movementY = event.movementY || 0;
@@ -1812,6 +1886,11 @@ function animate(time: number) {
 
   }
 
+  // Update atlas visualization
+  if (atlasVisualization) {
+    atlasVisualization.update(time);
+  }
+
   // Render scene
   renderer.render(scene, camera);
 
@@ -1828,11 +1907,8 @@ function onWindowResize() {
   fpsCamera.aspect = aspect;
   fpsCamera.updateProjectionMatrix();
   
-  // Update orbital camera (orthographic)
-  orbitalCamera.left = frustumSize * aspect / -2;
-  orbitalCamera.right = frustumSize * aspect / 2;
-  orbitalCamera.top = frustumSize / 2;
-  orbitalCamera.bottom = frustumSize / -2;
+  // Update orbital camera (now also perspective)
+  (orbitalCamera as THREE.PerspectiveCamera).aspect = aspect;
   orbitalCamera.updateProjectionMatrix();
   
   renderer.setSize(window.innerWidth, window.innerHeight);

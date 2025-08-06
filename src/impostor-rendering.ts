@@ -16,23 +16,16 @@ import {
 
 import { computeObjectBoundingSphere } from './octahedral-utils.js';
 import { 
-  OctahedralImpostorUniforms, 
-  OctahedralImpostorDefines,
   CreateOctahedralImpostor,
-  MaterialConstructor,
   DEFAULT_CONFIG,
   OctahedralMode
 } from './octahedral-utils.js';
 import { createTextureAtlas } from './atlas-generation.js';
 import {
   calculateOptimalFraming,
-  FramingMode,
-  ViewingAngle,
   CameraFramingConfig,
   FramingResult,
-  FRAMING_PRESETS,
-  centerOrbitalCamera,
-  calculateOptimalViewingDistance
+  FRAMING_PRESETS
 } from './camera-framing-utils.js';
 
 // ============================================================================
