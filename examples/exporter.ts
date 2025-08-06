@@ -1,6 +1,6 @@
 import { Mesh, MeshNormalMaterial, WebGLRenderer } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { createTextureAtlas, exportTextureFromRenderTarget } from '../src/index.js';
+import { createTextureAtlas, exportTextureFromRenderTarget, OctahedralMode } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
@@ -9,7 +9,7 @@ renderer.setSize(512, 512); // Set a reasonable size for export
 // Load GLTF model
 const loader = new GLTFLoader();
 loader.load(
-  'tree.glb', // Use local asset
+  'battleaxe.glb', // Use local asset
   (gltf) => {
     const mesh = gltf.scene;
     
@@ -25,8 +25,9 @@ loader.load(
     const atlas = createTextureAtlas({ 
       renderer, 
       target: mesh, 
-      useHemiOctahedron: true, 
-      spritesPerSide: 16 
+      octahedralMode: OctahedralMode.HEMISPHERICAL, 
+      textureSize: 4096,
+      spritesPerSide: 32 
     });
 
     exportTextureFromRenderTarget(renderer, atlas.renderTarget, 'albedo', 0);

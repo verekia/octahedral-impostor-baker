@@ -3,7 +3,22 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
-import { OctahedralImpostor, exportTextureAsPNG, createOctahedralImpostorMaterial } from '../src/index.js';
+import { 
+  OctahedralImpostor, 
+  exportTextureAsPNG, 
+  createOctahedralImpostorMaterial, 
+  OctahedralMode, 
+  CameraType,
+  ImpostorPositioningMode,
+  FramingMode,
+  ViewingAngle,
+  FRAMING_PRESETS,
+  calculateOptimalFraming,
+  applyCameraFraming,
+  animateCameraToFraming,
+  centerOrbitalCamera,
+  calculateOptimalViewingDistance
+} from '../src/index.js';
 import { FPSController } from './controllers/FPSController.js';
 import { createGround } from './objects/Ground.js';
 import { setupLights } from './utils/Lights.js';
@@ -58,8 +73,11 @@ let physics: {
   rigidBodies: Map<THREE.Object3D, RAPIER.RigidBody>;
 };
 
+// Ground mesh reference
+let groundMesh: THREE.Object3D | null = null;
+
 // Control mode state
-let currentControlMode: ControlMode = ControlMode.FPS;
+let currentControlMode: ControlMode = ControlMode.ORBITAL; // Changed to orbital by default
 let fpsController: FPSController;
 let orbitControls: OrbitControls;
 let inputHandler: InputHandler;
@@ -70,13 +88,34 @@ let currentAtlasConfig: any = null;
 let updateDebugWireframe: (() => void) | null = null;
 let updateStatusIndicator: (() => void) | null = null;
 
+// Preset models configuration
+const PRESET_MODELS = [
+  { name: "BattleAxe", filename: "battleaxe.glb" },
+  { name: "Sword", filename: "sword.glb" },
+  { name: "Shield", filename: "shield.glb" },
+  { name: "House", filename: "house.glb" },
+  { name: "Tree", filename: "tree.glb" },
+  { name: "JungleTree", filename: "jungletree.glb" },
+  { name: "PirateShip", filename: "pirateship.glb" }
+];
+
+// Default atlas configuration (updated to match requirements)
+const DEFAULT_ATLAS_CONFIG = {
+  textureSize: 4096, // 4k resolution
+  spritesPerSide: 32, // 32 frames per side
+  octahedralMode: OctahedralMode.HEMISPHERICAL, // Hemispherical mode
+  cameraType: CameraType.ORTHOGRAPHIC, // Camera type for atlas generation
+  disableBlending: true // Triplanar blending disabled by default
+};
+
 // Configuration for texture import
 const textureImportConfig = {
   albedoTexture: null as THREE.Texture | null,
   normalTexture: null as THREE.Texture | null,
-  resolution: 2048,
-  framesPerSide: 12,
-  useHemiOctahedron: true,
+  resolution: 4096, // Updated to 4k
+  framesPerSide: 32, // Updated to 32
+  octahedralMode: OctahedralMode.HEMISPHERICAL, // Updated to hemispherical
+  cameraType: CameraType.ORTHOGRAPHIC, // Camera type for atlas generation
   generateFromTextures: () => generateImpostorFromTextures()
 };
 
@@ -94,8 +133,8 @@ async function init() {
   };
 
   // Create ground
-  const ground = createGround(physics);
-  scene.add(ground);
+  groundMesh = createGround(physics);
+  scene.add(groundMesh);
 
   // Setup lights (will be replaced with proper directional light in setupGUI)
   setupLights(scene);
@@ -110,14 +149,13 @@ async function init() {
 
   // Setup orbital controls
   orbitControls = new OrbitControls(orbitalCamera, renderer.domElement);
-  orbitControls.maxPolarAngle = Math.PI / 2;
   orbitControls.enabled = false; // Start disabled
 
   // Initialize input handler
   inputHandler = new InputHandler();
 
-  // Start with FPS mode
-  switchControlMode(ControlMode.FPS);
+  // Start with orbital mode
+  switchControlMode(ControlMode.ORBITAL);
 
   // Add help message to console
   console.log("Controls:");
@@ -128,11 +166,36 @@ async function init() {
   // Handle window resize
   window.addEventListener('resize', onWindowResize);
 
-  // Load the tree model and create impostor
-  await loadTreeAndCreateImpostor();
+  // Load the default BattleAxe model using preset system
+  try {
+    await loadPresetModel('battleaxe.glb');
+  } catch (error) {
+    console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
+  }
+
+  // Setup GUI (always called regardless of model loading success)
+  updateDebugWireframe = setupGUI(currentMesh, impostor, currentAtlasConfig);
 
   // Start animation loop
   requestAnimationFrame(animate);
+}
+
+// Helper function to update orbital control restrictions based on impostor mode
+function updateOrbitalControlRestrictions() {
+  // Use currentAtlasConfig if available, otherwise fall back to DEFAULT_ATLAS_CONFIG
+  const atlasConfig = currentAtlasConfig || DEFAULT_ATLAS_CONFIG;
+  
+  if (atlasConfig.octahedralMode === OctahedralMode.HEMISPHERICAL) {
+    // In hemispherical mode, restrict orbital controls to not go below the model
+    orbitControls.minPolarAngle = 0; // Can look straight down from above
+    orbitControls.maxPolarAngle = Math.PI / 2; // Cannot go below horizontal plane
+    console.log('🔒 Orbital controls restricted for hemispherical mode');
+  } else {
+    // In spherical mode, allow full rotation
+    orbitControls.minPolarAngle = 0;
+    orbitControls.maxPolarAngle = Math.PI;
+    console.log('🔓 Orbital controls unrestricted for spherical mode');
+  }
 }
 
 // Function to switch between control modes
@@ -144,6 +207,11 @@ function switchControlMode(mode: ControlMode) {
     camera = fpsCamera;
     orbitControls.enabled = false;
     
+    // Show ground mesh and physics
+    if (groundMesh) {
+      groundMesh.visible = true;
+    }
+    
     // Set background for FPS mode
     scene.background = new THREE.Color(0x87CEEB);
     renderer.setClearColor(0x87CEEB, 1);
@@ -153,7 +221,24 @@ function switchControlMode(mode: ControlMode) {
     // Switch to orbital mode  
     camera = orbitalCamera;
     orbitControls.enabled = true;
-    orbitControls.update();
+    
+    // Apply restrictions based on impostor mode
+    updateOrbitalControlRestrictions();
+    
+    // Center camera on impostor if one exists
+    if (impostor) {
+      const impostorCenter = impostor.position.clone();
+      const boundingSphere = impostor.smartPositioning?.boundingSphere;
+      const paddingFactor = 1.5; // Default comfortable padding for FPS mode
+      centerOrbitalCamera(orbitControls, impostorCenter, boundingSphere, orbitalCamera, paddingFactor);
+    } else {
+      orbitControls.update();
+    }
+    
+    // Hide ground mesh for better orbital viewing
+    if (groundMesh) {
+      groundMesh.visible = false;
+    }
     
     // Set background for orbital mode (like the original example)
     scene.background = new THREE.Color('cyan');
@@ -213,12 +298,21 @@ async function loadModelFromFile(file: File, oldMesh: THREE.Object3D, oldImposto
     impostor = new OctahedralImpostor({
       renderer: renderer,
       target: mesh,
-      useHemiOctahedron: currentAtlasConfig.useHemiOctahedron,
+      octahedralMode: currentAtlasConfig.octahedralMode,
+      cameraType: currentAtlasConfig.cameraType,
       transparent: true,
       disableBlending: false,
       spritesPerSide: currentAtlasConfig.spritesPerSide,
       textureSize: currentAtlasConfig.textureSize,
-      baseType: THREE.MeshLambertMaterial
+      baseType: THREE.MeshLambertMaterial,
+      smartConfig: {
+        positioningMode: ImpostorPositioningMode.SMART,
+        framingPreset: 'PRODUCT',
+        autoScale: true,
+        scaleMultiplier: 1.0,
+        alignToGround: true,
+        groundY: 0
+      }
     });
     
     scene.add(impostor);
@@ -226,6 +320,14 @@ async function loadModelFromFile(file: File, oldMesh: THREE.Object3D, oldImposto
     // Hide original mesh, show impostor
     mesh.visible = false;
     impostor.visible = true;
+    
+    // If in orbital mode, center camera on impostor
+    if (currentControlMode === ControlMode.ORBITAL) {
+      const impostorCenter = impostor.position.clone();
+      const boundingSphere = impostor.smartPositioning?.boundingSphere;
+      const paddingFactor = 1.5; // Default comfortable padding for FPS mode
+      centerOrbitalCamera(orbitControls, impostorCenter, boundingSphere, orbitalCamera, paddingFactor);
+    }
 
     console.log('✅ Successfully loaded model:', file.name);
     
@@ -315,7 +417,8 @@ async function generateImpostorFromTextures(): Promise<void> {
       target: dummyTarget,
       baseType: THREE.MeshLambertMaterial,
       spritesPerSide: textureImportConfig.framesPerSide,
-      useHemiOctahedron: textureImportConfig.useHemiOctahedron,
+      octahedralMode: textureImportConfig.octahedralMode,
+      cameraType: textureImportConfig.cameraType,
       transparent: true,
       disableBlending: false,
       scale: 5,
@@ -348,17 +451,34 @@ async function generateImpostorFromTextures(): Promise<void> {
   }
 }
 
-async function loadTreeAndCreateImpostor() {
+
+
+// Function to load a preset model
+async function loadPresetModel(filename: string) {
   const loader = new GLTFLoader();
   
   try {
+    console.log(`Loading preset model: ${filename}`);
+    
+    // Remove existing mesh and impostor if they exist
+    if (currentMesh) {
+      scene.remove(currentMesh);
+    }
+    if (impostor) {
+      scene.remove(impostor);
+      // Dispose of textures and material
+      if (impostor.material.map) impostor.material.map.dispose();
+      if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+      impostor.material.dispose();
+    }
+    
     const gltf = await new Promise<any>((resolve, reject) => {
-      loader.load('tree.glb', resolve, undefined, reject);
+      loader.load(filename, resolve, undefined, reject);
     });
     
     const mesh = gltf.scene;
     
-    // Calculate the bounding box to position the tree correctly on the ground
+    // Calculate the bounding box to position the model correctly on the ground
     const box = new THREE.Box3().setFromObject(mesh);
     const groundOffset = -box.min.y; // Offset to place bottom at y=0
     
@@ -369,28 +489,40 @@ async function loadTreeAndCreateImpostor() {
     mesh.updateMatrixWorld(true);
     scene.add(mesh);
 
-    // Configuration for texture atlas generation (matching original example)
+    // Configuration for texture atlas generation 
+    // Preserve current GUI settings if they exist, otherwise use defaults
     const atlasConfig = {
-      textureSize: 8192,
-      spritesPerSide: 16,
-      useHemiOctahedron: true,
+      textureSize: currentAtlasConfig?.textureSize || DEFAULT_ATLAS_CONFIG.textureSize,
+      spritesPerSide: currentAtlasConfig?.spritesPerSide || DEFAULT_ATLAS_CONFIG.spritesPerSide,
+      octahedralMode: currentAtlasConfig?.octahedralMode || DEFAULT_ATLAS_CONFIG.octahedralMode,
+      cameraType: currentAtlasConfig?.cameraType || DEFAULT_ATLAS_CONFIG.cameraType,
     };
+    
+    console.log(`📋 Using atlas config for ${filename}:`, atlasConfig);
 
     // Set global references
     currentMesh = mesh;
     currentAtlasConfig = atlasConfig;
 
     // Create impostor AFTER the mesh is correctly positioned
-    // This way the bounding sphere calculation will use the correct position
     impostor = new OctahedralImpostor({
       renderer: renderer,
       target: mesh,
-      useHemiOctahedron: atlasConfig.useHemiOctahedron,
+      octahedralMode: atlasConfig.octahedralMode,
+      cameraType: atlasConfig.cameraType,
       transparent: true,
-      disableBlending: false,
+      disableBlending: DEFAULT_ATLAS_CONFIG.disableBlending,
       spritesPerSide: atlasConfig.spritesPerSide,
       textureSize: atlasConfig.textureSize,
-      baseType: THREE.MeshLambertMaterial
+      baseType: THREE.MeshLambertMaterial,
+      smartConfig: {
+        positioningMode: ImpostorPositioningMode.SMART,
+        framingPreset: 'PRODUCT',
+        autoScale: true,
+        scaleMultiplier: 1.0,
+        alignToGround: true,
+        groundY: 0
+      }
     });
     
     scene.add(impostor);
@@ -398,18 +530,22 @@ async function loadTreeAndCreateImpostor() {
     // Hide original mesh, show impostor
     mesh.visible = false;
     impostor.visible = true;
-
-    console.log('Octahedral impostor created at world origin');
     
-    // Setup GUI and get debug wireframe update function
-    updateDebugWireframe = setupGUI(mesh, impostor, atlasConfig);
+    // If in orbital mode, center camera on impostor and apply restrictions
+    if (currentControlMode === ControlMode.ORBITAL) {
+      const impostorCenter = impostor.position.clone();
+      const boundingSphere = impostor.smartPositioning?.boundingSphere;
+      const paddingFactor = 1.5; // Default comfortable padding for FPS mode
+      centerOrbitalCamera(orbitControls, impostorCenter, boundingSphere, orbitalCamera, paddingFactor);
+      
+      // Apply orbital control restrictions based on impostor mode
+      updateOrbitalControlRestrictions();
+    }
+
+    console.log(`✅ Preset model "${filename}" loaded and impostor created`);
     
   } catch (error) {
-    console.error('Failed to load tree model:', error);
-    console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
-    
-    // Setup GUI even without a model for import functionality
-    setupGUI(null, null, null);
+    console.error(`Failed to load preset model "${filename}":`, error);
   }
 }
 
@@ -420,8 +556,71 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
   let hybridDistanceController: any;
   let debugWireframe: THREE.LineSegments | null = null;
 
+  // Preset Models Section
+  const presetFolder = gui.addFolder('Examples');
+  
+  // Model source links (hardcoded for now, can be easily swapped later)
+  const MODEL_SOURCES = {
+    'BattleAxe': 'https://sketchfab.com/3d-models/double-handed-axe-8a6f6cf656f2434cbc46d2f845d80446',
+    'Sword': 'https://sketchfab.com/3d-models/medieval-sword-da574cba504e4b83a3293f3d3bd067fb',
+    'Shield': 'https://sketchfab.com/3d-models/scutum-e84a98aa81a04c9b909f32fff917427f',
+    'House': 'https://sketchfab.com/3d-models/medieval-watchtower-house-4099fd90094c400e987deb240078c38e',
+    'Tree': 'https://sketchfab.com/3d-models/stylized-tree-8daa312234f04a59a216682981af500d',
+    'JungleTree': 'https://sketchfab.com/3d-models/stylized-tree-113e4e48d4214b958d017157aeb6c8dd',
+    'PirateShip': 'https://sketchfab.com/3d-models/pirate-ship-fe0ea2cee119476fb1a7524d5ff380dc'
+  };
+
+  // Create preset selection object
+  const presetConfig = {
+    selectedPreset: 'BattleAxe', // Default selection
+    sourceLink: MODEL_SOURCES['BattleAxe'] // Initialize with default selection's link
+  };
+  
+  // Create dropdown for preset selection
+  const presetNames = PRESET_MODELS.reduce((acc, model) => {
+    acc[model.name] = model.name;
+    return acc;
+  }, {} as Record<string, string>);
+  
+  presetFolder.add(presetConfig, 'selectedPreset', presetNames).name('Select Model').onChange((value) => {
+    const selected = PRESET_MODELS.find(model => model.name === value);
+    if (selected) {
+      loadPresetModel(selected.filename);
+      // Update the source link dynamically
+      presetConfig.sourceLink = MODEL_SOURCES[value as keyof typeof MODEL_SOURCES];
+    }
+  });
+  
+  // Add dynamic source link text field (highlighted and clickable)
+  const sourceLinkController = presetFolder.add(presetConfig, 'sourceLink').name('🔗 Model Source').listen();
+  
+  // Make only the label clickable to open the link (not the text field)
+  const labelElement = sourceLinkController.domElement.querySelector('.name') as HTMLElement;
+  const inputElement = sourceLinkController.domElement.querySelector('input') as HTMLInputElement;
+  
+  if (labelElement) {
+    labelElement.addEventListener('click', () => {
+      if (presetConfig.sourceLink) {
+        window.open(presetConfig.sourceLink, '_blank');
+      }
+    });
+    
+    // Style only the label to look clickable
+    labelElement.style.cursor = 'pointer';
+    labelElement.style.color = '#4A90E2';
+    labelElement.style.textDecoration = 'underline';
+  }
+  
+  if (inputElement) {
+    // Style the text field to be shadowed/low opacity but still interactable
+    inputElement.style.opacity = '0.6';
+    inputElement.style.cursor = 'text'; // Keep text cursor for interactability
+  }
+  
+  presetFolder.open(); // Open by default
+
   // File Import Controls
-  const importFolder = gui.addFolder('📁 Model Import');
+  const importFolder = gui.addFolder('Custom Model');
   
   // Create hidden file input
   const fileInput = document.createElement('input');
@@ -446,10 +645,10 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
     info: 'Drag & drop GLB/GLTF files anywhere!'
   }, 'info').name('💡').disable();
   
-  importFolder.open();
+  importFolder.close(); // Explicitly collapse
 
   // Texture Import Controls
-  const textureImportFolder = gui.addFolder('🖼️ Texture Import');
+  const textureImportFolder = gui.addFolder('Impostor Import');
   
   // Create texture loader
   const textureLoader = new THREE.TextureLoader();
@@ -512,12 +711,15 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
   // Resolution and frames settings for imported textures
   textureImportFolder.add(textureImportConfig, 'resolution', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)');
   textureImportFolder.add(textureImportConfig, 'framesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side');
-  textureImportFolder.add(textureImportConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  textureImportFolder.add(textureImportConfig, 'octahedralMode', {
+    'Hemispherical': OctahedralMode.HEMISPHERICAL,
+    'Spherical': OctahedralMode.SPHERICAL
+  }).name('Octahedral Mode');
   
   // Generate button
   textureImportFolder.add(textureImportConfig, 'generateFromTextures').name('🚀 Generate Impostor');
   
-  textureImportFolder.open();
+  textureImportFolder.close(); // Explicitly collapse
 
   // Setup drag and drop
   setupDragAndDrop();
@@ -595,7 +797,7 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
     console.log('Starting regeneration...');
     
     // Store hybridDistance value before removing old impostor
-    const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.5;
+    const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.0;
     
     // Remove old impostor and debug wireframe
     scene.remove(impostor);
@@ -618,12 +820,21 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
       impostor = new OctahedralImpostor({
         renderer: renderer,
         target: currentMesh,
-        useHemiOctahedron: currentAtlasConfig.useHemiOctahedron,
+        octahedralMode: currentAtlasConfig.octahedralMode,
+        cameraType: currentAtlasConfig.cameraType,
         transparent: materialConfig.transparent,
         disableBlending: materialConfig.disableBlending,
         spritesPerSide: currentAtlasConfig.spritesPerSide,
         textureSize: currentAtlasConfig.textureSize,
-        baseType: THREE.MeshLambertMaterial
+        baseType: THREE.MeshLambertMaterial,
+        smartConfig: {
+          positioningMode: ImpostorPositioningMode.SMART,
+          framingPreset: 'PRODUCT',
+          autoScale: true,
+          scaleMultiplier: 1.0,
+          alignToGround: true,
+          groundY: 0
+        }
       });
       
       scene.add(impostor);
@@ -637,6 +848,14 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
       // Hide original mesh and show impostor based on config
       currentMesh.visible = !config.showImpostor;
       impostor.visible = config.showImpostor;
+      
+      // If in orbital mode, center camera on impostor
+      if (currentControlMode === ControlMode.ORBITAL) {
+        const impostorCenter = impostor.position.clone();
+        const boundingSphere = impostor.smartPositioning?.boundingSphere;
+        const paddingFactor = 1.5; // Default comfortable padding for FPS mode
+        centerOrbitalCamera(orbitControls, impostorCenter, boundingSphere, orbitalCamera, paddingFactor);
+      }
       
       // Update GUI controllers to reference new material
       if (alphaClampController) {
@@ -675,13 +894,13 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
   const infoDisplay = {
     totalAngles: (currentAtlasConfig || atlasConfig)?.spritesPerSide * (currentAtlasConfig || atlasConfig)?.spritesPerSide || 0,
     atlasInfo: currentAtlasConfig || atlasConfig ? `${(currentAtlasConfig || atlasConfig).textureSize}px, ${(currentAtlasConfig || atlasConfig).spritesPerSide}x${(currentAtlasConfig || atlasConfig).spritesPerSide}` : 'No model loaded',
-    octahedralMode: (currentAtlasConfig || atlasConfig)?.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical',
+    octahedralMode: (currentAtlasConfig || atlasConfig)?.octahedralMode === OctahedralMode.HEMISPHERICAL ? 'Hemispherical' : 'Full Spherical',
     updateInfo: function() {
       const config = currentAtlasConfig || atlasConfig;
       if (config) {
         this.totalAngles = config.spritesPerSide * config.spritesPerSide;
         this.atlasInfo = `${config.textureSize}px, ${config.spritesPerSide}x${config.spritesPerSide}`;
-        this.octahedralMode = config.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical';
+        this.octahedralMode = config.octahedralMode === OctahedralMode.HEMISPHERICAL ? 'Hemispherical' : 'Full Spherical';
       } else {
         this.totalAngles = 0;
         this.atlasInfo = 'No model loaded';
@@ -693,7 +912,7 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
   // Dynamic material settings (no regeneration needed)
   const materialConfig = {
     transparent: true,
-    disableBlending: false
+    disableBlending: DEFAULT_ATLAS_CONFIG.disableBlending
   };
   
   // Debug configuration
@@ -706,29 +925,14 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
     showImpostor: true
   };
   
-  // Camera Control Mode
-  const controlConfig = {
-    controlMode: currentControlMode,
-    switchMode: (mode: string) => {
-      switchControlMode(mode as ControlMode);
-      controlConfig.controlMode = mode as ControlMode;
-    }
-  };
-  
-  const controlFolder = gui.addFolder('Camera Controls');
-  controlFolder.add(controlConfig, 'controlMode', [ControlMode.FPS, ControlMode.ORBITAL]).name('Control Mode').onChange((value) => {
-    controlConfig.switchMode(value);
-  });
-  controlFolder.open();
-  
   // Texture Atlas Generation Settings
   const atlasFolder = gui.addFolder('Texture Atlas Settings');
   
   // Use currentAtlasConfig if available, otherwise create default values for GUI
   const atlasConfigForGUI = currentAtlasConfig || atlasConfig || {
-    textureSize: 8192,
-    spritesPerSide: 16,
-    useHemiOctahedron: true,
+    textureSize: 4096,
+    spritesPerSide: 32,
+    octahedralMode: OctahedralMode.HEMISPHERICAL,
     regenerate: () => {
       if (currentAtlasConfig && currentAtlasConfig.regenerate) {
         currentAtlasConfig.regenerate();
@@ -749,25 +953,52 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
     const totalFrames = atlasConfigForGUI.spritesPerSide * atlasConfigForGUI.spritesPerSide;
     console.log(`Frames changed to: ${atlasConfigForGUI.spritesPerSide}x${atlasConfigForGUI.spritesPerSide} (${totalFrames} angles)`);
   });
-  atlasFolder.add(atlasConfigForGUI, 'useHemiOctahedron').name('Hemispherical Mode').onChange(() => {
-    if (currentAtlasConfig) currentAtlasConfig.useHemiOctahedron = atlasConfigForGUI.useHemiOctahedron;
-    const mode = atlasConfigForGUI.useHemiOctahedron ? 'Hemispherical (upper hemisphere only)' : 'Full Spherical (360° coverage)';
+  atlasFolder.add(atlasConfigForGUI, 'octahedralMode', {
+    'Hemispherical': OctahedralMode.HEMISPHERICAL,
+    'Spherical': OctahedralMode.SPHERICAL
+  }).name('Octahedral Mode').onChange((value: OctahedralMode) => {
+    if (currentAtlasConfig) currentAtlasConfig.octahedralMode = value;
+    const mode = value === OctahedralMode.HEMISPHERICAL ? 'Hemispherical (upper hemisphere only)' : 'Full Spherical (360° coverage)';
     console.log(`Octahedral mode changed to: ${mode}`);
     infoDisplay.updateInfo();
+    
+    // Update orbital controls restrictions if in orbital mode
+    if (currentControlMode === ControlMode.ORBITAL) {
+      updateOrbitalControlRestrictions();
+      orbitControls.update();
+    }
+  });
+  
+  // Add cameraType to atlasConfigForGUI if it doesn't exist
+  if (!('cameraType' in atlasConfigForGUI)) {
+    atlasConfigForGUI.cameraType = CameraType.ORTHOGRAPHIC;
+  }
+  
+  atlasFolder.add(atlasConfigForGUI, 'cameraType', {
+    'Orthographic': CameraType.ORTHOGRAPHIC,
+    'Perspective': CameraType.PERSPECTIVE
+  }).name('Camera Type').onChange((value: CameraType) => {
+    if (currentAtlasConfig) currentAtlasConfig.cameraType = value;
+    const type = value === CameraType.ORTHOGRAPHIC ? 'Orthographic (no perspective distortion)' : 'Perspective (with perspective distortion)';
+    console.log(`Camera type changed to: ${type}`);
   });
   atlasFolder.add(infoDisplay, 'totalAngles').name('📊 Total Angles').listen().disable();
   atlasFolder.add(infoDisplay, 'atlasInfo').name('📏 Current Atlas').listen().disable();
   atlasFolder.add(infoDisplay, 'octahedralMode').name('🌐 Mode').listen().disable();
   atlasFolder.add(atlasConfigForGUI, 'regenerate').name('🔄 Regenerate Atlas');
-  atlasFolder.open();
+  atlasFolder.open(); // Keep open for easy access
   
   // Material Settings
-  const materialFolder = gui.addFolder('Material Settings');
+  const materialFolder = gui.addFolder('Render settings');
   
   // Only add impostor-specific controls if impostor exists
   if (impostor) {
     alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
-    hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
+    
+    // Only show elevation threshold in FPS mode (not in orbital mode)
+    if (currentControlMode === ControlMode.FPS) {
+      hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
+    }
   }
   
   // Dynamic material controls (no regeneration needed)
@@ -819,6 +1050,36 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
   exportFolder.add(exportConfig, 'exportAlbedo').name('📤 Export Albedo PNG');
   exportFolder.add(exportConfig, 'exportNormalDepth').name('📤 Export Normal/Depth PNG');
   
+  // Camera Control Mode
+  const controlConfig = {
+    controlMode: currentControlMode,
+    switchMode: (mode: string) => {
+      switchControlMode(mode as ControlMode);
+      controlConfig.controlMode = mode as ControlMode;
+    }
+  };
+  
+  const controlFolder = gui.addFolder('Orbit/First person');
+  controlFolder.add(controlConfig, 'controlMode', [ControlMode.FPS, ControlMode.ORBITAL]).name('Control Mode').onChange((value) => {
+    controlConfig.switchMode(value);
+  });
+  
+  // FPS Camera controls (integrated)
+  if (fpsController) {
+    controlFolder.add(fpsController, 'moveSpeed', 1, 20, 0.5).name('Move Speed');
+    controlFolder.add(fpsController, 'jumpVelocity', 5, 50, 0.5).name('Jump Velocity');
+    controlFolder.add(fpsController, 'gravityForce', 10, 50, 1).name('Gravity');
+  }
+  
+  controlFolder.close(); // Explicitly collapse
+
+  // Directional Light controls (for orbital mode, like the original example)
+  const lightFolder = gui.addFolder('Lighting');
+  lightFolder.add(directionalLight, 'intensity', 0, 10, 0.01).name('Intensity');
+  lightFolder.add(lightPosition, 'azimuth', -180, 180, 1).name('Azimuth').onChange(() => lightPosition.update());
+  lightFolder.add(lightPosition, 'elevation', -90, 90, 1).name('Elevation').onChange(() => lightPosition.update());
+  lightFolder.close(); // Explicitly collapse
+
   // Debug controls
   const debugFolder = gui.addFolder('Debug');
   debugFolder.add(debugConfig, 'showQuadOutline').name('Show Impostor Outline').onChange((value) => {
@@ -834,18 +1095,6 @@ function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor
       }
     }
   });
-  
-  // Directional Light controls (for orbital mode, like the original example)
-  const lightFolder = gui.addFolder('Directional Light');
-  lightFolder.add(directionalLight, 'intensity', 0, 10, 0.01).name('Intensity');
-  lightFolder.add(lightPosition, 'azimuth', -180, 180, 1).name('Azimuth').onChange(() => lightPosition.update());
-  lightFolder.add(lightPosition, 'elevation', -90, 90, 1).name('Elevation').onChange(() => lightPosition.update());
-
-  // Camera controls
-  const cameraFolder = gui.addFolder('FPS Camera');
-  cameraFolder.add(fpsController, 'moveSpeed', 1, 20, 0.5).name('Move Speed');
-  cameraFolder.add(fpsController, 'jumpVelocity', 5, 50, 0.5).name('Jump Velocity');
-  cameraFolder.add(fpsController, 'gravityForce', 10, 50, 1).name('Gravity');
   
   // Fix pointer lock issue with GUI
   setupGUIPointerLockFix(gui);

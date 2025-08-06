@@ -25,6 +25,9 @@ export * from './atlas-generation.js';
 // Re-export impostor rendering functionality
 export * from './impostor-rendering.js';
 
+// Re-export smart camera framing utilities
+export * from './camera-framing-utils.js';
+
 // Import TSL modules for future extensibility
 // These imports are preserved but not currently used
 import {

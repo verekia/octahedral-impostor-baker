@@ -8,7 +8,10 @@ import {
   Matrix4,
   PlaneGeometry,
   Mesh,
-  Sphere
+  Sphere,
+  Vector3,
+  Object3D,
+  PerspectiveCamera
 } from 'three';
 
 import { computeObjectBoundingSphere } from './octahedral-utils.js';
@@ -17,9 +20,71 @@ import {
   OctahedralImpostorDefines,
   CreateOctahedralImpostor,
   MaterialConstructor,
-  DEFAULT_CONFIG
+  DEFAULT_CONFIG,
+  OctahedralMode
 } from './types.js';
 import { createTextureAtlas } from './atlas-generation.js';
+import {
+  calculateOptimalFraming,
+  FramingMode,
+  ViewingAngle,
+  CameraFramingConfig,
+  FramingResult,
+  FRAMING_PRESETS,
+  centerOrbitalCamera,
+  calculateOptimalViewingDistance
+} from './camera-framing-utils.js';
+
+// ============================================================================
+// SMART IMPOSTOR POSITIONING CONFIGURATION
+// ============================================================================
+
+/** Smart positioning modes for octahedral impostors */
+export enum ImpostorPositioningMode {
+  /** Automatic positioning based on bounding sphere */
+  AUTO = 'auto',
+  /** Manual positioning with explicit scale and translation */
+  MANUAL = 'manual',
+  /** Smart positioning with custom framing preferences */
+  SMART = 'smart'
+}
+
+/** Configuration for smart impostor positioning */
+export interface SmartImpostorConfig {
+  /** Positioning mode to use */
+  positioningMode: ImpostorPositioningMode;
+  /** Framing configuration for smart positioning */
+  framingConfig?: Partial<CameraFramingConfig>;
+  /** Framing preset to use (overridden by framingConfig if provided) */
+  framingPreset?: keyof typeof FRAMING_PRESETS;
+  /** Whether to automatically adjust impostor size based on scene scale */
+  autoScale: boolean;
+  /** Custom scale multiplier (applied after auto-scaling) */
+  scaleMultiplier: number;
+  /** Custom position offset from calculated optimal position */
+  positionOffset?: Vector3;
+  /** Whether to align impostor to ground plane */
+  alignToGround: boolean;
+  /** Ground plane Y coordinate (only used if alignToGround is true) */
+  groundY: number;
+}
+
+/** Default smart impostor configuration */
+export const DEFAULT_SMART_CONFIG: SmartImpostorConfig = {
+  positioningMode: ImpostorPositioningMode.AUTO,
+  framingPreset: 'PRODUCT',
+  autoScale: true,
+  scaleMultiplier: 1.0,
+  alignToGround: false,
+  groundY: 0
+};
+
+/** Extended impostor creation parameters with smart positioning */
+export interface CreateSmartOctahedralImpostor<T extends Material> 
+  extends CreateOctahedralImpostor<T> {
+  /** Smart positioning configuration */
+  smartConfig?: Partial<SmartImpostorConfig>;
+}
 
 // ============================================================================
 // OCTAHEDRAL IMPOSTOR MATERIAL SHADERS
@@ -268,24 +333,28 @@ const IMPOSTOR_VERTEX_TRANSFORM = /* glsl */ `
     vec3 cameraPosLocal = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
   #endif
 
-  // Hybrid rotation: Y-locked when close, full alignment when far
-  // Calculate distance from impostor center to camera
-  float distance = length(cameraPosLocal);
-  
-  // Simple elevation-based rotation choice
-  float verticalOffset = cameraPosLocal.y; // Keep sign for above/below detection
-  
-  // Binary decision: are we clearly above the impostor?
-  bool isAbove = verticalOffset > hybridDistance;
-  
   vec3 cameraDir;
-  if (isAbove) {
-    // Above threshold: allow full 3D rotation to see top properly
+  
+  #ifdef OCTAHEDRAL_USE_HEMI_OCTAHEDRON
+    // Hemispherical mode: use hybrid rotation logic
+    float cameraDistance = length(cameraPosLocal);
+    float verticalOffset = cameraPosLocal.y;
+    
+    // Make threshold relative to camera distance for better behavior at all scales
+    float relativeThreshold = hybridDistance * cameraDistance * 0.1;
+    bool isAbove = verticalOffset > relativeThreshold;
+    
+    if (isAbove) {
+      // Above threshold: allow full 3D rotation to see top properly
+      cameraDir = normalize(cameraPosLocal);
+    } else {
+      // At/below threshold: Y-locked horizontal rotation only
+      cameraDir = normalize(vec3(cameraPosLocal.x, 0.0, cameraPosLocal.z));
+    }
+  #else
+    // Spherical mode: simple full 3D rotation
     cameraDir = normalize(cameraPosLocal);
-  } else {
-    // At/below threshold: Y-locked horizontal rotation only
-    cameraDir = normalize(vec3(cameraPosLocal.x, 0.0, cameraPosLocal.z));
-  }
+  #endif
 
   vec3 projectedVertex = projectVertex(cameraDir);
 
@@ -335,8 +404,8 @@ export function createOctahedralImpostorMaterial<T extends Material>(
   if (!parameters.baseType) {
     throw new Error('createOctahedralImpostorMaterial: baseType is required');
   }
-  if (parameters.useHemiOctahedron == null) {
-    throw new Error('createOctahedralImpostorMaterial: useHemiOctahedron is required');
+  if (!parameters.octahedralMode) {
+    throw new Error('createOctahedralImpostorMaterial: octahedralMode is required');
   }
 
   // Generate texture atlas
@@ -354,7 +423,7 @@ export function createOctahedralImpostorMaterial<T extends Material>(
   // Configure shader defines
   material.octahedralImpostorDefines = {
     OCTAHEDRAL_USE_NORMAL: true,
-    ...(parameters.useHemiOctahedron && { OCTAHEDRAL_USE_HEMI_OCTAHEDRON: true }),
+    ...(parameters.octahedralMode === OctahedralMode.HEMISPHERICAL && { OCTAHEDRAL_USE_HEMI_OCTAHEDRON: true }),
     ...(parameters.transparent && { OCTAHEDRAL_TRANSPARENT: true })
   };
 
@@ -373,7 +442,7 @@ export function createOctahedralImpostorMaterial<T extends Material>(
         .setPosition(translation) 
     },
     disableBlending: { value: parameters.disableBlending ? 1.0 : 0.0 },
-    hybridDistance: { value: parameters.hybridDistance ?? 0.1 }
+    hybridDistance: { value: parameters.hybridDistance ?? DEFAULT_CONFIG.HYBRID_DISTANCE }
   };
 
   // Setup shader compilation override
@@ -426,6 +495,119 @@ function setupMaterialShaderOverride(material: Material): void {
 }
 
 // ============================================================================
+// SMART IMPOSTOR POSITIONING FUNCTIONS
+// ============================================================================
+
+/**
+ * Calculates smart positioning for an octahedral impostor based on the target object
+ * 
+ * @param target - The 3D object to create an impostor for
+ * @param config - Smart positioning configuration
+ * @returns Calculated position, scale, and other impostor properties
+ */
+export function calculateSmartImpostorPositioning(
+  target: Object3D,
+  config: Partial<SmartImpostorConfig> = {}
+): {
+  position: Vector3;
+  scale: number;
+  boundingSphere: Sphere;
+  framingResult?: FramingResult;
+} {
+  const finalConfig = { ...DEFAULT_SMART_CONFIG, ...config };
+  const boundingSphere = computeObjectBoundingSphere(target, new Sphere(), true);
+  
+  let position: Vector3;
+  let scale: number;
+  let framingResult: FramingResult | undefined;
+  
+  switch (finalConfig.positioningMode) {
+    case ImpostorPositioningMode.AUTO:
+      // Simple automatic positioning based on bounding sphere
+      position = boundingSphere.center.clone();
+      scale = boundingSphere.radius * 2;
+      
+      if (finalConfig.alignToGround) {
+        const groundOffset = finalConfig.groundY - (boundingSphere.center.y - boundingSphere.radius);
+        position.y = finalConfig.groundY + boundingSphere.radius + groundOffset;
+      }
+      break;
+      
+    case ImpostorPositioningMode.SMART:
+      // Use camera framing utilities for intelligent positioning
+      const framingConfig = finalConfig.framingConfig || 
+        (finalConfig.framingPreset ? FRAMING_PRESETS[finalConfig.framingPreset] : FRAMING_PRESETS.PRODUCT);
+      
+      // Create a dummy camera for framing calculations
+      const dummyCamera = new PerspectiveCamera(75, 1, 0.1, 1000);
+      framingResult = calculateOptimalFraming(target, dummyCamera, framingConfig);
+      
+      // For better UX, center the impostor at world origin (0,0,0) for orbital viewing
+      // This ensures the impostor appears centered in the viewport
+      position = new Vector3(0, 0, 0);
+      
+      // Calculate scale based on framing distance and padding  
+      scale = framingResult.boundingSphere.radius * 2 * framingResult.paddingFactor;
+      
+      if (finalConfig.alignToGround) {
+        // When aligning to ground, position based on impostor size
+        position.y = finalConfig.groundY + (scale / 2);
+      }
+      break;
+      
+    case ImpostorPositioningMode.MANUAL:
+    default:
+      // Fall back to original behavior - just use bounding sphere center and size
+      position = boundingSphere.center.clone();
+      scale = boundingSphere.radius * 2;
+      break;
+  }
+  
+  // Apply scale multiplier
+  if (finalConfig.autoScale) {
+    scale *= finalConfig.scaleMultiplier;
+  }
+  
+  // Apply position offset
+  if (finalConfig.positionOffset) {
+    position.add(finalConfig.positionOffset);
+  }
+  
+  return {
+    position,
+    scale,
+    boundingSphere,
+    framingResult
+  };
+}
+
+/**
+ * Creates a smart octahedral impostor with intelligent positioning
+ * 
+ * @param parameters - Configuration parameters with smart positioning options
+ * @returns Configured impostor material
+ */
+export function createSmartOctahedralImpostorMaterial<T extends Material>(
+  parameters: CreateSmartOctahedralImpostor<T>
+): T {
+  // Calculate smart positioning
+  const smartPositioning = calculateSmartImpostorPositioning(
+    parameters.target,
+    parameters.smartConfig
+  );
+  
+  // Override scale and translation with smart positioning results
+  const enhancedParameters = {
+    ...parameters,
+    scale: smartPositioning.scale,
+    translation: smartPositioning.position
+  };
+  
+  // Create the impostor material using the enhanced parameters
+  return createOctahedralImpostorMaterial(enhancedParameters);
+}
+
+// ============================================================================
 // OCTAHEDRAL IMPOSTOR CLASS
 // ============================================================================
 
@@ -438,29 +620,58 @@ const IMPOSTOR_PLANE_GEOMETRY = new PlaneGeometry();
  * efficient billboard representations of complex 3D objects.
  */
 export class OctahedralImpostor<M extends Material = Material> extends Mesh<PlaneGeometry, M> {
+  /** Smart positioning result (if smart positioning was used) */
+  public smartPositioning?: {
+    position: Vector3;
+    scale: number;
+    boundingSphere: Sphere;
+    framingResult?: FramingResult;
+  };
+
   /**
    * Creates a new octahedral impostor.
    * 
    * @param materialOrParams - Either a pre-configured impostor material or parameters to create one
    */
-  constructor(materialOrParams: M | CreateOctahedralImpostor<M>) {
+  constructor(materialOrParams: M | CreateOctahedralImpostor<M> | CreateSmartOctahedralImpostor<M>) {
     super(IMPOSTOR_PLANE_GEOMETRY, null!);
 
     if (!(materialOrParams as M).isOctahedralImpostorMaterial) {
       // Material needs to be created from parameters
-      const params = materialOrParams as CreateOctahedralImpostor<M>;
-      const boundingSphere = computeObjectBoundingSphere(params.target, new Sphere(), true);
+      const params = materialOrParams as CreateSmartOctahedralImpostor<M>;
+      
+      // Check if smart positioning is requested
+      const hasSmartConfig = 'smartConfig' in params && params.smartConfig;
+      
+      if (hasSmartConfig) {
+        // Use smart positioning system
+        this.smartPositioning = calculateSmartImpostorPositioning(params.target, params.smartConfig);
+        
+        // Apply smart positioning to the mesh
+        this.scale.setScalar(this.smartPositioning.scale);
+        this.position.copy(this.smartPositioning.position);
+        
+        // Set parameters for material creation
+        params.scale = this.smartPositioning.scale;
+        params.translation = this.smartPositioning.position.clone();
+        
+        // Create the material with smart positioning
+        this.material = createOctahedralImpostorMaterial(params);
+      } else {
+        // Use original positioning logic
+        const boundingSphere = computeObjectBoundingSphere(params.target, new Sphere(), true);
 
-      // Scale impostor to match target object size
-      this.scale.multiplyScalar(boundingSphere.radius * 2);
-      this.position.copy(boundingSphere.center);
+        // Scale impostor to match target object size
+        this.scale.multiplyScalar(boundingSphere.radius * 2);
+        this.position.copy(boundingSphere.center);
 
-      // Set scale and translation for instanced mesh support
-      params.scale = boundingSphere.radius * 2;
-      params.translation = boundingSphere.center.clone();
+        // Set scale and translation for instanced mesh support
+        params.scale = boundingSphere.radius * 2;
+        params.translation = boundingSphere.center.clone();
 
-      // Create the material
-      this.material = createOctahedralImpostorMaterial(params);
+        // Create the material
+        this.material = createOctahedralImpostorMaterial(params);
+      }
     } else {
       // Material is already configured
       this.material = materialOrParams as M;
@@ -512,5 +723,53 @@ export class OctahedralImpostor<M extends Material = Material> extends Mesh<Plan
         uniforms.hybridDistance.value = updates.hybridDistance;
       }
     }
+  }
+
+  /**
+   * Updates the impostor positioning using smart framing calculations.
+   * Recalculates optimal position and scale based on the target object and new configuration.
+   * 
+   * @param target - The target object to reframe
+   * @param smartConfig - Updated smart positioning configuration
+   */
+  public updateSmartPositioning(target: Object3D, smartConfig: Partial<SmartImpostorConfig> = {}): void {
+    const newPositioning = calculateSmartImpostorPositioning(target, smartConfig);
+    
+    // Update mesh transform
+    this.position.copy(newPositioning.position);
+    this.scale.setScalar(newPositioning.scale);
+    
+    // Update material uniforms
+    const material = this.material as any;
+    if (material.octahedralImpostorUniforms?.transform) {
+      const transform = new Matrix4()
+        .makeScale(newPositioning.scale, newPositioning.scale, newPositioning.scale)
+        .setPosition(newPositioning.position);
+      material.octahedralImpostorUniforms.transform.value.copy(transform);
+    }
+    
+    // Store the new positioning data
+    this.smartPositioning = newPositioning;
+    
+    // Update matrix world
+    this.updateMatrixWorld();
+  }
+
+  /**
+   * Gets the current framing result if smart positioning was used
+   * 
+   * @returns The framing result or undefined if smart positioning wasn't used
+   */
+  public getFramingResult(): FramingResult | undefined {
+    return this.smartPositioning?.framingResult;
+  }
+
+  /**
+   * Gets the calculated bounding sphere from smart positioning
+   * 
+   * @returns The bounding sphere or undefined if smart positioning wasn't used
+   */
+  public getSmartBoundingSphere(): Sphere | undefined {
+    return this.smartPositioning?.boundingSphere;
   }
 }

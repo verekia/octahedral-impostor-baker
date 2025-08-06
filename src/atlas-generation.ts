@@ -5,6 +5,8 @@
 
 import {
   OrthographicCamera,
+  PerspectiveCamera,
+  Camera,
   Sphere,
   Vector4,
   Vector2,
@@ -25,7 +27,7 @@ import {
 } from 'three';
 
 import { computeObjectBoundingSphere, hemiOctaGridToDir, octaGridToDir } from './octahedral-utils.js';
-import { CreateTextureAtlasParams, TextureAtlas, DEFAULT_CONFIG } from './types.js';
+import { CreateTextureAtlasParams, TextureAtlas, DEFAULT_CONFIG, OctahedralMode, CameraType } from './types.js';
 
 // ============================================================================
 // ATLAS GENERATION SHADERS
@@ -105,7 +107,8 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
 // ============================================================================
 
 const ATLAS_RESOURCES = {
-  camera: new OrthographicCamera(),
+  orthographicCamera: new OrthographicCamera(),
+  perspectiveCamera: new PerspectiveCamera(75, 1, 0.001, 1000),
   boundingSphere: new Sphere(),
   oldScissor: new Vector4(),
   oldViewport: new Vector4(),
@@ -125,24 +128,28 @@ const ATLAS_RESOURCES = {
  * @returns Generated texture atlas with albedo and normal-depth textures
  */
 export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtlas {
-  const { renderer, target, useHemiOctahedron } = params;
+  const { renderer, target, octahedralMode } = params;
   
   // Validate required parameters
   if (!renderer) throw new Error('Parameter "renderer" is required');
   if (!target) throw new Error('Parameter "target" is required');
-  if (useHemiOctahedron == null) throw new Error('Parameter "useHemiOctahedron" is required');
+  if (!octahedralMode) throw new Error('Parameter "octahedralMode" is required');
 
   // Extract configuration with defaults
   const atlasSize = params.textureSize ?? DEFAULT_CONFIG.ATLAS_SIZE;
   const spritesPerSide = params.spritesPerSide ?? DEFAULT_CONFIG.SPRITES_PER_SIDE;
   const cameraFactor = params.cameraFactor ?? DEFAULT_CONFIG.CAMERA_FACTOR;
+  const cameraType = params.cameraType ?? DEFAULT_CONFIG.CAMERA_TYPE;
   
   const spritesPerSideMinusOne = spritesPerSide - 1;
   const spriteSize = atlasSize / spritesPerSide;
 
   // Compute bounding sphere and setup camera
   computeObjectBoundingSphere(target, ATLAS_RESOURCES.boundingSphere, true);
-  updateAtlasCamera(ATLAS_RESOURCES.camera, ATLAS_RESOURCES.boundingSphere, cameraFactor);
+  const camera = cameraType === CameraType.PERSPECTIVE 
+    ? ATLAS_RESOURCES.perspectiveCamera 
+    : ATLAS_RESOURCES.orthographicCamera;
+  updateAtlasCamera(camera, ATLAS_RESOURCES.boundingSphere, cameraFactor, cameraType);
 
   // Setup rendering environment
   const renderState = setupAtlasRenderer(renderer, atlasSize);
@@ -154,12 +161,13 @@ export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtl
       renderAtlasView(col, row, {
         renderer,
         target,
-        useHemiOctahedron,
+        octahedralMode,
         spritesPerSide,
         spritesPerSideMinusOne,
         spriteSize,
         atlasSize,
-        cameraFactor
+        cameraFactor,
+        camera
       });
     }
   }
@@ -182,17 +190,40 @@ export function createTextureAtlas(params: CreateTextureAtlasParams): TextureAtl
 /**
  * Updates the atlas camera configuration based on the bounding sphere.
  */
-function updateAtlasCamera(camera: OrthographicCamera, boundingSphere: Sphere, cameraFactor: number): void {
+function updateAtlasCamera(camera: Camera, boundingSphere: Sphere, cameraFactor: number, cameraType: CameraType): void {
   const { radius } = boundingSphere;
   
-  camera.left = -radius;
-  camera.right = radius;
-  camera.top = radius;
-  camera.bottom = -radius;
-  camera.zoom = cameraFactor;
-  camera.near = 0.001;
-  camera.far = radius * 2 + 0.001;
-  camera.updateProjectionMatrix();
+  if (cameraType === CameraType.PERSPECTIVE) {
+    const perspectiveCamera = camera as PerspectiveCamera;
+    const fovRadians = (75 * Math.PI) / 180;
+    
+    // Calculate optimal distance to maximize texture space usage
+    // Use radius directly (not radius * sqrt(2)) for tighter framing
+    // Add small padding factor (1.1) to prevent edge clipping
+    const minDistance = (radius * 1.1) / Math.tan(fovRadians / 2);
+    
+    // Apply camera factor to the calculated distance
+    const cameraDistance = minDistance * cameraFactor;
+    
+    perspectiveCamera.fov = 75;
+    perspectiveCamera.aspect = 1;
+    perspectiveCamera.near = 0.001;
+    perspectiveCamera.far = cameraDistance + radius + 0.001;
+    perspectiveCamera.updateProjectionMatrix();
+    
+    // Store the calculated distance factor for use in renderAtlasView
+    (perspectiveCamera as any).computedDistanceFactor = cameraDistance / radius;
+  } else {
+    const orthographicCamera = camera as OrthographicCamera;
+    orthographicCamera.left = -radius;
+    orthographicCamera.right = radius;
+    orthographicCamera.top = radius;
+    orthographicCamera.bottom = -radius;
+    orthographicCamera.zoom = cameraFactor;
+    orthographicCamera.near = 0.001;
+    orthographicCamera.far = radius * 2 + 0.001;
+    orthographicCamera.updateProjectionMatrix();
+  }
 }
 
 /**
@@ -201,12 +232,13 @@ function updateAtlasCamera(camera: OrthographicCamera, boundingSphere: Sphere, c
 interface RenderViewParams {
   renderer: WebGLRenderer;
   target: Object3D;
-  useHemiOctahedron: boolean;
+  octahedralMode: OctahedralMode;
   spritesPerSide: number;
   spritesPerSideMinusOne: number;
   spriteSize: number;
   atlasSize: number;
   cameraFactor: number;
+  camera: Camera;
 }
 
 /**
@@ -214,23 +246,28 @@ interface RenderViewParams {
  */
 function renderAtlasView(col: number, row: number, params: RenderViewParams): void {
   const { 
-    renderer, target, useHemiOctahedron, spritesPerSideMinusOne, 
-    spriteSize, atlasSize, cameraFactor 
+    renderer, target, octahedralMode, spritesPerSideMinusOne, 
+    spriteSize, atlasSize, cameraFactor, camera 
   } = params;
   
-  const { camera, boundingSphere, coordinates } = ATLAS_RESOURCES;
+  const { boundingSphere, coordinates } = ATLAS_RESOURCES;
   
   // Calculate grid coordinates and direction
   coordinates.set(col / spritesPerSideMinusOne, row / spritesPerSideMinusOne);
   
-  if (useHemiOctahedron) {
+  if (octahedralMode === OctahedralMode.HEMISPHERICAL) {
     hemiOctaGridToDir(coordinates, camera.position);
   } else {
     octaGridToDir(coordinates, camera.position);
   }
 
   // Position camera and set viewport
-  camera.position.setLength(boundingSphere.radius * cameraFactor).add(boundingSphere.center);
+  const isPerspective = (camera as any).computedDistanceFactor !== undefined;
+  const distanceFactor = isPerspective 
+    ? (camera as any).computedDistanceFactor 
+    : cameraFactor;
+  
+  camera.position.setLength(boundingSphere.radius * distanceFactor).add(boundingSphere.center);
   camera.lookAt(boundingSphere.center);
 
   const xOffset = (col / params.spritesPerSide) * atlasSize;

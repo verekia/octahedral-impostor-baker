@@ -2,7 +2,7 @@ import { Mesh, MeshBasicMaterial, OrthographicCamera, PlaneGeometry, Scene, WebG
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import Stats from 'stats.js';
-import { createTextureAtlas } from '../src/index.js';
+import { createTextureAtlas, OctahedralMode } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
@@ -27,12 +27,11 @@ camera.position.z = 100;
 
 const scene = new Scene();
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.maxPolarAngle = Math.PI / 2;
 controls.update();
 
 // Load GLTF model
 const loader = new GLTFLoader();
-loader.load('tree.glb', (gltf) => {
+loader.load('battleaxe.glb', (gltf) => {
   const mesh = gltf.scene;
   scene.add(mesh);
 
@@ -46,7 +45,13 @@ loader.load('tree.glb', (gltf) => {
   }
   animate();
 
-  const result = createTextureAtlas({ renderer: renderer, target: mesh, useHemiOctahedron: true });
+  const result = createTextureAtlas({ 
+    renderer: renderer, 
+    target: mesh, 
+    octahedralMode: OctahedralMode.HEMISPHERICAL,
+    textureSize: 4096,
+    spritesPerSide: 32
+  });
   mesh.visible = false;
 
   const plane = new Mesh(new PlaneGeometry(10, 10), new MeshBasicMaterial({ transparent: true, map: result.albedo }));

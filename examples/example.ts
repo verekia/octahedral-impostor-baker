@@ -4,7 +4,22 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
-import { OctahedralImpostor, exportTextureAsPNG, createOctahedralImpostorMaterial } from '../src/index.js';
+import { 
+  OctahedralImpostor, 
+  exportTextureAsPNG, 
+  createOctahedralImpostorMaterial, 
+  OctahedralMode, 
+  CameraType,
+  ImpostorPositioningMode,
+  FramingMode,
+  ViewingAngle,
+  FRAMING_PRESETS,
+  calculateOptimalFraming,
+  applyCameraFraming,
+  animateCameraToFraming,
+  centerOrbitalCamera,
+  calculateOptimalViewingDistance
+} from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
@@ -29,7 +44,6 @@ camera.position.z = 100;
 
 const scene = new Scene();
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.maxPolarAngle = Math.PI / 2;
 controls.update();
 
 // Global variables for dynamic loading
@@ -84,7 +98,8 @@ async function generateImpostorFromTextures(): Promise<void> {
       target: dummyTarget,
       baseType: MeshLambertMaterial,
       spritesPerSide: textureImportConfig.framesPerSide,
-      useHemiOctahedron: textureImportConfig.useHemiOctahedron,
+      octahedralMode: textureImportConfig.octahedralMode,
+      cameraType: textureImportConfig.cameraType,
       transparent: materialConfig.transparent,
       disableBlending: materialConfig.disableBlending,
       scale: 5,
@@ -149,24 +164,40 @@ async function loadModelFromFile(file: File): Promise<void> {
 
 // Global configurations
 const atlasConfig = {
-  textureSize: 2048,
-  spritesPerSide: 12,
-  useHemiOctahedron: true,
+  textureSize: 4096,
+  spritesPerSide: 32,
+  octahedralMode: OctahedralMode.HEMISPHERICAL,
+  cameraType: CameraType.ORTHOGRAPHIC,
   regenerate: () => regenerateImpostor()
 };
 
 const materialConfig = {
   transparent: true,
-  disableBlending: false
+  disableBlending: true
 };
+
+// Smart positioning configuration
+const smartConfig = {
+  positioningMode: ImpostorPositioningMode.SMART,
+  framingPreset: 'PRODUCT' as keyof typeof FRAMING_PRESETS,
+  autoScale: true,
+  scaleMultiplier: 1.0,
+  alignToGround: false,
+  groundY: 0,
+  frameCamera: () => frameCameraToImpostor()
+};
+
+// Apply initial orbital control restrictions based on default config
+updateOrbitalControlRestrictions();
 
 // Configuration for texture import
 const textureImportConfig = {
   albedoTexture: null as Texture | null,
   normalTexture: null as Texture | null,
-  resolution: 2048,
-  framesPerSide: 12,
-  useHemiOctahedron: true,
+  resolution: 4096,
+  framesPerSide: 32,
+  octahedralMode: OctahedralMode.HEMISPHERICAL,
+  cameraType: CameraType.ORTHOGRAPHIC,
   generateFromTextures: () => generateImpostorFromTextures()
 };
 
@@ -180,6 +211,55 @@ const infoDisplay = {
 };
 
 const config = { showImpostor: true };
+
+// Helper function to update orbital control restrictions based on impostor mode
+function updateOrbitalControlRestrictions() {
+  if (atlasConfig.octahedralMode === OctahedralMode.HEMISPHERICAL) {
+    // In hemispherical mode, restrict orbital controls to not go below the model
+    controls.minPolarAngle = 0; // Can look straight down from above
+    controls.maxPolarAngle = Math.PI / 2; // Cannot go below horizontal plane
+  } else {
+    // In spherical mode, allow full rotation
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+  }
+}
+
+// Smart camera framing function
+function frameCameraToImpostor() {
+  if (!impostor || !currentMesh) {
+    console.warn('Cannot frame camera: no impostor or mesh loaded');
+    return;
+  }
+
+  try {
+    // Get the smart framing result from the impostor
+    const framingResult = impostor.getFramingResult();
+    
+    if (framingResult) {
+      // Use the stored framing result
+      animateCameraToFraming(camera, framingResult, {
+        duration: 1000,
+        easing: 'ease-in-out'
+      }).then(() => {
+        console.log('✅ Camera framed to impostor using smart positioning');
+      });
+    } else {
+      // Calculate new framing for the current mesh
+      const framingPreset = FRAMING_PRESETS[smartConfig.framingPreset];
+      const optimalFraming = calculateOptimalFraming(currentMesh, camera, framingPreset);
+      
+      animateCameraToFraming(camera, optimalFraming, {
+        duration: 1000,
+        easing: 'ease-in-out'
+      }).then(() => {
+        console.log('✅ Camera framed to object using calculated positioning');
+      });
+    }
+  } catch (error) {
+    console.error('❌ Failed to frame camera:', error);
+  }
+}
 
 function initializeModelAndImpostor(mesh: any) {
   currentMesh = mesh;
@@ -207,16 +287,35 @@ function initializeModelAndImpostor(mesh: any) {
   impostor = new OctahedralImpostor({
     renderer: renderer,
     target: mesh,
-    useHemiOctahedron: atlasConfig.useHemiOctahedron,
+    octahedralMode: atlasConfig.octahedralMode,
+    cameraType: atlasConfig.cameraType,
     transparent: materialConfig.transparent,
     disableBlending: materialConfig.disableBlending,
     spritesPerSide: atlasConfig.spritesPerSide,
     textureSize: atlasConfig.textureSize,
-    baseType: MeshLambertMaterial
+    baseType: MeshLambertMaterial,
+    smartConfig: {
+      positioningMode: smartConfig.positioningMode,
+      framingPreset: smartConfig.framingPreset,
+      autoScale: smartConfig.autoScale,
+      scaleMultiplier: smartConfig.scaleMultiplier,
+      alignToGround: smartConfig.alignToGround,
+      groundY: smartConfig.groundY
+    }
   });
   scene.add(impostor);
 
   mesh.visible = false;
+
+  // Center the orbital camera on the impostor with optimal distance
+  const impostorCenter = impostor.position.clone();
+  const boundingSphere = impostor.smartPositioning?.boundingSphere;
+  const framingPreset = FRAMING_PRESETS[smartConfig.framingPreset];
+  const paddingFactor = framingPreset.customPadding || 1.5;
+  centerOrbitalCamera(controls, impostorCenter, boundingSphere, camera, paddingFactor);
+
+  // Apply orbital control restrictions based on impostor mode
+  updateOrbitalControlRestrictions();
 
   // Update GUI controllers if they exist
   updateGUIControllers();
@@ -256,12 +355,21 @@ function regenerateImpostor() {
     impostor = new OctahedralImpostor({
       renderer: renderer,
       target: currentMesh,
-      useHemiOctahedron: atlasConfig.useHemiOctahedron,
+      octahedralMode: atlasConfig.octahedralMode,
+      cameraType: atlasConfig.cameraType,
       transparent: materialConfig.transparent,
       disableBlending: materialConfig.disableBlending,
       spritesPerSide: atlasConfig.spritesPerSide,
       textureSize: atlasConfig.textureSize,
-      baseType: MeshLambertMaterial
+      baseType: MeshLambertMaterial,
+      smartConfig: {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      }
     });
     
     scene.add(impostor);
@@ -269,6 +377,13 @@ function regenerateImpostor() {
     // Hide original mesh and show impostor based on config
     currentMesh.visible = !config.showImpostor;
     impostor.visible = config.showImpostor;
+    
+    // Center the orbital camera on the impostor with optimal distance
+    const impostorCenter = impostor.position.clone();
+    const boundingSphere = impostor.smartPositioning?.boundingSphere;
+    const framingPreset = FRAMING_PRESETS[smartConfig.framingPreset];
+    const paddingFactor = framingPreset.customPadding || 1.5;
+    centerOrbitalCamera(controls, impostorCenter, boundingSphere, camera, paddingFactor);
     
     // Update GUI controllers
     updateGUIControllers();
@@ -405,12 +520,118 @@ function createGUI() {
   // Resolution and frames settings for imported textures
   textureImportFolder.add(textureImportConfig, 'resolution', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)');
   textureImportFolder.add(textureImportConfig, 'framesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side');
-  textureImportFolder.add(textureImportConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  textureImportFolder.add(textureImportConfig, 'octahedralMode', {
+    'Hemispherical': OctahedralMode.HEMISPHERICAL,
+    'Spherical': OctahedralMode.SPHERICAL
+  }).name('Octahedral Mode');
+  textureImportFolder.add(textureImportConfig, 'cameraType', {
+    'Orthographic': CameraType.ORTHOGRAPHIC,
+    'Perspective': CameraType.PERSPECTIVE
+  }).name('Camera Type');
   
   // Generate button
   textureImportFolder.add(textureImportConfig, 'generateFromTextures').name('🚀 Generate Impostor');
   
   textureImportFolder.open();
+
+  // Smart Positioning Controls
+  const smartPositioningFolder = gui.addFolder('🎯 Smart Positioning');
+  
+  smartPositioningFolder.add(smartConfig, 'positioningMode', {
+    'Automatic': ImpostorPositioningMode.AUTO,
+    'Smart Framing': ImpostorPositioningMode.SMART,
+    'Manual': ImpostorPositioningMode.MANUAL
+  }).name('Positioning Mode').onChange(() => {
+    if (impostor && currentMesh) {
+      impostor.updateSmartPositioning(currentMesh, {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      });
+      
+      // Re-center camera on impostor with optimal distance
+      const impostorCenter = impostor.position.clone();
+      const boundingSphere = impostor.smartPositioning?.boundingSphere;
+      const framingPreset = FRAMING_PRESETS[smartConfig.framingPreset];
+      const paddingFactor = framingPreset.customPadding || 1.5;
+      centerOrbitalCamera(controls, impostorCenter, boundingSphere, camera, paddingFactor);
+      
+      console.log(`Positioning mode changed to: ${smartConfig.positioningMode}`);
+    }
+  });
+  
+  smartPositioningFolder.add(smartConfig, 'framingPreset', {
+    'Product': 'PRODUCT',
+    'Technical': 'TECHNICAL',
+    'Cinematic': 'CINEMATIC',
+    'Inspection': 'INSPECTION'
+  }).name('Framing Style').onChange(() => {
+    if (impostor && currentMesh && smartConfig.positioningMode === ImpostorPositioningMode.SMART) {
+      impostor.updateSmartPositioning(currentMesh, {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      });
+      
+      // Re-center camera on impostor with optimal distance
+      const impostorCenter = impostor.position.clone();
+      const boundingSphere = impostor.smartPositioning?.boundingSphere;
+      const framingPreset = FRAMING_PRESETS[smartConfig.framingPreset];
+      const paddingFactor = framingPreset.customPadding || 1.5;
+      centerOrbitalCamera(controls, impostorCenter, boundingSphere, camera, paddingFactor);
+      
+      console.log(`Framing preset changed to: ${smartConfig.framingPreset}`);
+    }
+  });
+  
+  smartPositioningFolder.add(smartConfig, 'scaleMultiplier', 0.1, 3.0, 0.1).name('Scale Multiplier').onChange(() => {
+    if (impostor && currentMesh) {
+      impostor.updateSmartPositioning(currentMesh, {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      });
+    }
+  });
+  
+  smartPositioningFolder.add(smartConfig, 'alignToGround').name('Align to Ground').onChange(() => {
+    if (impostor && currentMesh) {
+      impostor.updateSmartPositioning(currentMesh, {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      });
+    }
+  });
+  
+  smartPositioningFolder.add(smartConfig, 'groundY', -10, 10, 0.1).name('Ground Y Position').onChange(() => {
+    if (impostor && currentMesh && smartConfig.alignToGround) {
+      impostor.updateSmartPositioning(currentMesh, {
+        positioningMode: smartConfig.positioningMode,
+        framingPreset: smartConfig.framingPreset,
+        autoScale: smartConfig.autoScale,
+        scaleMultiplier: smartConfig.scaleMultiplier,
+        alignToGround: smartConfig.alignToGround,
+        groundY: smartConfig.groundY
+      });
+    }
+  });
+  
+  smartPositioningFolder.add(smartConfig, 'frameCamera').name('🎬 Frame Camera');
+  
+  smartPositioningFolder.open();
   
   // Texture Atlas Generation Settings
   const atlasFolder = gui.addFolder('Texture Atlas Settings');
@@ -423,7 +644,21 @@ function createGUI() {
     const totalFrames = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
     console.log(`Frames changed to: ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} (${totalFrames} angles)`);
   });
-  atlasFolder.add(atlasConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  atlasFolder.add(atlasConfig, 'octahedralMode', {
+    'Hemispherical': OctahedralMode.HEMISPHERICAL,
+    'Spherical': OctahedralMode.SPHERICAL
+  }).name('Octahedral Mode').onChange((value: OctahedralMode) => {
+    const mode = value === OctahedralMode.HEMISPHERICAL ? 'Hemispherical (upper hemisphere only)' : 'Full Spherical (360° coverage)';
+    console.log(`Octahedral mode changed to: ${mode}`);
+    
+    // Update orbital control restrictions
+    updateOrbitalControlRestrictions();
+    controls.update();
+  });
+  atlasFolder.add(atlasConfig, 'cameraType', {
+    'Orthographic': CameraType.ORTHOGRAPHIC,
+    'Perspective': CameraType.PERSPECTIVE
+  }).name('Camera Type');
   atlasFolder.add(infoDisplay, 'totalAngles').name('📊 Total Angles').listen().disable();
   atlasFolder.add(infoDisplay, 'atlasInfo').name('📏 Current Atlas').listen().disable();
   atlasFolder.add(atlasConfig, 'regenerate').name('🔄 Regenerate Atlas');
@@ -525,7 +760,7 @@ function setupDragAndDrop() {
 }
 
 // Load default model and start
-loader.load('tree.glb', (gltf) => {
+loader.load('battleaxe.glb', (gltf) => {
   initializeModelAndImpostor(gltf.scene);
   
   // Set up dynamic GUI controllers after impostor is created
@@ -542,7 +777,7 @@ loader.load('tree.glb', (gltf) => {
 }, 
 undefined, // onProgress
 (error) => {
-  console.warn('Could not load default tree.glb:', error);
+  console.warn('Could not load default battleaxe.glb:', error);
   console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
   
   // Start animation loop even without a model

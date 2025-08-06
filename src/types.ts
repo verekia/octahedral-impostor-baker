@@ -17,15 +17,34 @@ import {
 // SHARED CONSTANTS
 // ============================================================================
 
+/** Octahedral mapping modes */
+export enum OctahedralMode {
+  /** Full spherical mapping (360° coverage) */
+  SPHERICAL = 'spherical',
+  /** Hemispherical mapping (upper hemisphere only) */
+  HEMISPHERICAL = 'hemispherical'
+}
+
+/** Camera types for atlas generation */
+export enum CameraType {
+  /** Orthographic camera (no perspective distortion) */
+  ORTHOGRAPHIC = 'orthographic',
+  /** Perspective camera (with perspective distortion) */
+  PERSPECTIVE = 'perspective'
+}
+
 /** Default configuration values */
 export const DEFAULT_CONFIG = {
-  ATLAS_SIZE: 2048,
-  SPRITES_PER_SIDE: 16,
+  ATLAS_SIZE: 4096,
+  SPRITES_PER_SIDE: 32,
   CAMERA_FACTOR: 1,
   ALPHA_TEST: 0.1,
   ALPHA_CLAMP: 0.1,
   SCALE: 1,
-  TRANSLATION: new Vector3()
+  TRANSLATION: new Vector3(),
+  OCTAHEDRAL_MODE: OctahedralMode.HEMISPHERICAL,
+  CAMERA_TYPE: CameraType.ORTHOGRAPHIC,
+  HYBRID_DISTANCE: 2.0
 } as const;
 
 // ============================================================================
@@ -94,8 +113,8 @@ export interface OctahedralImpostorMaterial {
 export interface CreateTextureAtlasParams {
   /** WebGL renderer instance */
   renderer: WebGLRenderer;
-  /** Whether to use hemispherical or full octahedral mapping */
-  useHemiOctahedron: boolean;
+  /** Octahedral mapping mode (spherical or hemispherical) */
+  octahedralMode: OctahedralMode;
   /** Target 3D object to generate atlas for */
   target: Object3D;
   /** Atlas texture resolution (default: 2048) */
@@ -104,6 +123,8 @@ export interface CreateTextureAtlasParams {
   spritesPerSide?: number;
   /** Camera distance factor (default: 1) */
   cameraFactor?: number;
+  /** Camera type for atlas generation (default: ORTHOGRAPHIC) */
+  cameraType?: CameraType;
 }
 
 /**
