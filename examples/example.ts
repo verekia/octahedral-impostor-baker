@@ -1,9 +1,10 @@
-import { DirectionalLight, MeshLambertMaterial, OrthographicCamera, Scene, WebGLRenderer } from 'three';
+import * as THREE from 'three';
+import { DirectionalLight, MeshLambertMaterial, OrthographicCamera, Scene, WebGLRenderer, TextureLoader, Texture, Matrix4, BoxGeometry, Mesh } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
-import { OctahedralImpostor, exportTextureAsPNG } from '../src/index.js';
+import { OctahedralImpostor, exportTextureAsPNG, createOctahedralImpostorMaterial } from '../src/index.js';
 
 // Setup renderer
 const renderer = new WebGLRenderer({ antialias: true });
@@ -31,10 +32,157 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.maxPolarAngle = Math.PI / 2;
 controls.update();
 
-// Load GLTF model
+// Global variables for dynamic loading
+let currentMesh: any = null;
+let impostor: any = null;
+let gui: GUI;
+let alphaClampController: any;
+let transparentController: any;
+let hybridDistanceController: any;
+
+// Extend window type for animation flag
+declare global {
+  interface Window {
+    animationStarted?: boolean;
+  }
+}
+
+// Create GUI first (before loading any model)
+createGUI();
+
+// Load default GLTF model
 const loader = new GLTFLoader();
-loader.load('tree.glb', (gltf) => {
-  const mesh = gltf.scene;
+
+async function generateImpostorFromTextures(): Promise<void> {
+  if (!textureImportConfig.albedoTexture || !textureImportConfig.normalTexture) {
+    alert('Please import both albedo and normal textures first!');
+    return;
+  }
+
+  try {
+    // Clean up previous impostor
+    if (impostor) {
+      scene.remove(impostor);
+      if (impostor.material.map) impostor.material.map.dispose();
+      if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+      impostor.material.dispose();
+    }
+
+    // Hide current mesh if any
+    if (currentMesh) {
+      currentMesh.visible = false;
+    }
+
+    // Create a dummy target object for material creation
+    const dummyGeometry = new BoxGeometry(1, 1, 1);
+    const dummyMaterial = new MeshLambertMaterial();
+    const dummyTarget = new Mesh(dummyGeometry, dummyMaterial);
+
+    // Create impostor material using the standard creation process
+    const material = createOctahedralImpostorMaterial({
+      renderer: renderer,
+      target: dummyTarget,
+      baseType: MeshLambertMaterial,
+      spritesPerSide: textureImportConfig.framesPerSide,
+      useHemiOctahedron: textureImportConfig.useHemiOctahedron,
+      transparent: materialConfig.transparent,
+      disableBlending: materialConfig.disableBlending,
+      scale: 5,
+      translation: new THREE.Vector3(0, 0, 0)
+    });
+
+    // Override the generated textures with our imported ones
+    if (material.map) material.map.dispose();
+    if (material.normalMap) material.normalMap.dispose();
+    
+    material.map = textureImportConfig.albedoTexture;
+    material.normalMap = textureImportConfig.normalTexture;
+    material.needsUpdate = true;
+
+    // Create impostor mesh
+    impostor = new OctahedralImpostor(material);
+    impostor.position.set(0, 0, 0);
+    impostor.scale.setScalar(5); // Default scale for imported textures
+    
+    scene.add(impostor);
+
+    // Update controllers if they exist
+    updateGUIControllers();
+
+    console.log('✅ Successfully created impostor from imported textures');
+  } catch (error) {
+    console.error('❌ Failed to create impostor from textures:', error);
+    alert('Failed to create impostor from textures');
+  }
+}
+
+async function loadModelFromFile(file: File): Promise<void> {
+  const url = URL.createObjectURL(file);
+  
+  try {
+    const gltf = await new Promise<any>((resolve, reject) => {
+      loader.load(url, resolve, undefined, reject);
+    });
+    
+    // Clean up previous model and impostor
+    if (currentMesh) {
+      scene.remove(currentMesh);
+    }
+    if (impostor) {
+      scene.remove(impostor);
+      if (impostor.material.map) impostor.material.map.dispose();
+      if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+      impostor.material.dispose();
+    }
+    
+    currentMesh = gltf.scene;
+    initializeModelAndImpostor(currentMesh);
+    
+    console.log('✅ Successfully loaded model:', file.name);
+  } catch (error) {
+    console.error('❌ Failed to load model:', file.name, error);
+    alert(`Failed to load model: ${file.name}`);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// Global configurations
+const atlasConfig = {
+  textureSize: 2048,
+  spritesPerSide: 12,
+  useHemiOctahedron: true,
+  regenerate: () => regenerateImpostor()
+};
+
+const materialConfig = {
+  transparent: true,
+  disableBlending: false
+};
+
+// Configuration for texture import
+const textureImportConfig = {
+  albedoTexture: null as Texture | null,
+  normalTexture: null as Texture | null,
+  resolution: 2048,
+  framesPerSide: 12,
+  useHemiOctahedron: true,
+  generateFromTextures: () => generateImpostorFromTextures()
+};
+
+const infoDisplay = {
+  totalAngles: atlasConfig.spritesPerSide * atlasConfig.spritesPerSide,
+  atlasInfo: `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`,
+  updateInfo: function() {
+    this.totalAngles = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
+    this.atlasInfo = `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`;
+  }
+};
+
+const config = { showImpostor: true };
+
+function initializeModelAndImpostor(mesh: any) {
+  currentMesh = mesh;
 
   const directionalLight = new DirectionalLight('white', 3);
 
@@ -56,33 +204,7 @@ loader.load('tree.glb', (gltf) => {
 
   scene.add(mesh, directionalLight);
 
-  // Configuration for texture atlas generation
-  const atlasConfig = {
-    textureSize: 2048,
-    spritesPerSide: 12,
-    useHemiOctahedron: true,
-    regenerate: () => {
-      regenerateImpostor();
-    }
-  };
-
-  // Dynamic material settings (no regeneration needed)
-  const materialConfig = {
-    transparent: true,
-    disableBlending: false
-  };
-  
-  // Info display
-  const infoDisplay = {
-    totalAngles: atlasConfig.spritesPerSide * atlasConfig.spritesPerSide,
-    atlasInfo: `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`,
-    updateInfo: function() {
-      this.totalAngles = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
-      this.atlasInfo = `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`;
-    }
-  };
-
-  let impostor = new OctahedralImpostor({
+  impostor = new OctahedralImpostor({
     renderer: renderer,
     target: mesh,
     useHemiOctahedron: atlasConfig.useHemiOctahedron,
@@ -96,84 +218,199 @@ loader.load('tree.glb', (gltf) => {
 
   mesh.visible = false;
 
-  let alphaClampController: any;
-  let transparentController: any;
-  let hybridDistanceController: any;
+  // Update GUI controllers if they exist
+  updateGUIControllers();
 
-  function regenerateImpostor() {
-    console.log('Starting regeneration...');
+  // Start animation loop if not already running
+  if (!window.animationStarted) {
+    animate();
+    window.animationStarted = true;
+  }
+}
+
+function regenerateImpostor() {
+  if (!currentMesh || !impostor) {
+    console.warn('Cannot regenerate: no mesh or impostor loaded');
+    return;
+  }
+
+  console.log('Starting regeneration...');
+  
+  // Store hybridDistance value before removing old impostor
+  const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.5;
+  
+  // Remove old impostor
+  scene.remove(impostor);
+  
+  // Dispose of old material and textures
+  if (impostor.material.map) impostor.material.map.dispose();
+  if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+  impostor.material.dispose();
+  
+  // Ensure mesh is visible during texture atlas generation
+  currentMesh.visible = true;
+  currentMesh.updateMatrixWorld(true);
+  
+  try {
+    // Create new impostor with updated settings
+    impostor = new OctahedralImpostor({
+      renderer: renderer,
+      target: currentMesh,
+      useHemiOctahedron: atlasConfig.useHemiOctahedron,
+      transparent: materialConfig.transparent,
+      disableBlending: materialConfig.disableBlending,
+      spritesPerSide: atlasConfig.spritesPerSide,
+      textureSize: atlasConfig.textureSize,
+      baseType: MeshLambertMaterial
+    });
     
-    // Store hybridDistance value before removing old impostor
-    const currentHybridDistance = impostor.material.octahedralImpostorUniforms?.hybridDistance?.value ?? 2.5;
+    scene.add(impostor);
     
-    // Remove old impostor
-    scene.remove(impostor);
+    // Hide original mesh and show impostor based on config
+    currentMesh.visible = !config.showImpostor;
+    impostor.visible = config.showImpostor;
     
-    // Dispose of old material and textures
-    if (impostor.material.map) impostor.material.map.dispose();
-    if (impostor.material.normalMap) impostor.material.normalMap.dispose();
-    impostor.material.dispose();
+    // Update GUI controllers
+    updateGUIControllers();
     
-    // Ensure mesh is visible during texture atlas generation
-    mesh.visible = true;
-    mesh.updateMatrixWorld(true);
+    // Apply current material settings to new impostor
+    impostor.material.transparent = materialConfig.transparent;
+    impostor.material.octahedralImpostorUniforms.disableBlending.value = materialConfig.disableBlending ? 1.0 : 0.0;
+    impostor.material.octahedralImpostorUniforms.hybridDistance.value = currentHybridDistance;
+    impostor.material.needsUpdate = true;
     
-    try {
-      // Create new impostor with updated settings
-      impostor = new OctahedralImpostor({
-        renderer: renderer,
-        target: mesh,
-        useHemiOctahedron: atlasConfig.useHemiOctahedron,
-        transparent: materialConfig.transparent,
-        disableBlending: materialConfig.disableBlending,
-        spritesPerSide: atlasConfig.spritesPerSide,
-        textureSize: atlasConfig.textureSize,
-        baseType: MeshLambertMaterial
-      });
-      
-      scene.add(impostor);
-      
-      // Hide original mesh and show impostor based on config
-      mesh.visible = !config.showImpostor;
-      impostor.visible = config.showImpostor;
-      
-      // Update GUI controllers to reference new material
-      if (alphaClampController) {
-        alphaClampController.object = impostor.material.octahedralImpostorUniforms.alphaClamp;
-      }
-      if (hybridDistanceController) {
-        hybridDistanceController.object = impostor.material.octahedralImpostorUniforms.hybridDistance;
-      }
-      
-      // Apply current material settings to new impostor
-      impostor.material.transparent = materialConfig.transparent;
-      impostor.material.octahedralImpostorUniforms.disableBlending.value = materialConfig.disableBlending ? 1.0 : 0.0;
-      impostor.material.octahedralImpostorUniforms.hybridDistance.value = currentHybridDistance;
-      impostor.material.needsUpdate = true;
-      
-      // Update info display
-      infoDisplay.updateInfo();
-      
-      console.log(`✅ Regenerated texture atlas: ${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} frames (${atlasConfig.spritesPerSide * atlasConfig.spritesPerSide} total angles)`);
-    } catch (error) {
-      console.error('❌ Error during regeneration:', error);
-      // Fallback: ensure mesh is visible if impostor creation fails
-      mesh.visible = true;
+    // Update info display
+    infoDisplay.updateInfo();
+    
+    console.log(`✅ Regenerated texture atlas: ${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} frames (${atlasConfig.spritesPerSide * atlasConfig.spritesPerSide} total angles)`);
+  } catch (error) {
+    console.error('❌ Error during regeneration:', error);
+    // Fallback: ensure mesh is visible if impostor creation fails
+    currentMesh.visible = true;
+  }
+}
+
+// Animation loop
+function animate() {
+  stats.begin();
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+  stats.end();
+}
+
+function updateGUIControllers() {
+  if (!impostor) return;
+  
+  if (alphaClampController) {
+    alphaClampController.object = impostor.material.octahedralImpostorUniforms.alphaClamp;
+  }
+  if (hybridDistanceController) {
+    hybridDistanceController.object = impostor.material.octahedralImpostorUniforms.hybridDistance;
+  }
+}
+
+function createGUI() {
+  gui = new GUI();
+  
+  // File Import Controls
+  const importFolder = gui.addFolder('📁 Model Import');
+  
+  // Create hidden file input
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.glb,.gltf';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+  
+  fileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      await loadModelFromFile(file);
     }
-  }
-
-  // Animation loop
-  function animate() {
-    stats.begin();
-    requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
-    stats.end();
-  }
-  animate();
-
-  const config = { showImpostor: true };
-  const gui = new GUI();
+  });
+  
+  importFolder.add({
+    selectFile: () => fileInput.click()
+  }, 'selectFile').name('📂 Select GLB/GLTF File');
+  
+  // Drag and drop info
+  importFolder.add({
+    info: 'Drag & drop GLB/GLTF files anywhere!'
+  }, 'info').name('💡').disable();
+  
+  importFolder.open();
+  
+  // Texture Import Controls
+  const textureImportFolder = gui.addFolder('🖼️ Texture Import');
+  
+  // Create texture loader
+  const textureLoader = new TextureLoader();
+  
+  // Create hidden file inputs for textures
+  const albedoFileInput = document.createElement('input');
+  albedoFileInput.type = 'file';
+  albedoFileInput.accept = 'image/*';
+  albedoFileInput.style.display = 'none';
+  document.body.appendChild(albedoFileInput);
+  
+  const normalFileInput = document.createElement('input');
+  normalFileInput.type = 'file';
+  normalFileInput.accept = 'image/*';
+  normalFileInput.style.display = 'none';
+  document.body.appendChild(normalFileInput);
+  
+  // Albedo texture input
+  albedoFileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      try {
+        textureImportConfig.albedoTexture = await textureLoader.loadAsync(url);
+        console.log('✅ Albedo texture loaded:', file.name);
+      } catch (error) {
+        console.error('❌ Failed to load albedo texture:', error);
+        alert('Failed to load albedo texture');
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+  });
+  
+  // Normal texture input
+  normalFileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      try {
+        textureImportConfig.normalTexture = await textureLoader.loadAsync(url);
+        console.log('✅ Normal texture loaded:', file.name);
+      } catch (error) {
+        console.error('❌ Failed to load normal texture:', error);
+        alert('Failed to load normal texture');
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+  });
+  
+  textureImportFolder.add({
+    selectAlbedo: () => albedoFileInput.click()
+  }, 'selectAlbedo').name('📂 Select Albedo Map');
+  
+  textureImportFolder.add({
+    selectNormal: () => normalFileInput.click()
+  }, 'selectNormal').name('📂 Select Normal Map');
+  
+  // Resolution and frames settings for imported textures
+  textureImportFolder.add(textureImportConfig, 'resolution', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)');
+  textureImportFolder.add(textureImportConfig, 'framesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side');
+  textureImportFolder.add(textureImportConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  
+  // Generate button
+  textureImportFolder.add(textureImportConfig, 'generateFromTextures').name('🚀 Generate Impostor');
+  
+  textureImportFolder.open();
   
   // Texture Atlas Generation Settings
   const atlasFolder = gui.addFolder('Texture Atlas Settings');
@@ -194,53 +431,125 @@ loader.load('tree.glb', (gltf) => {
   
   // Material Settings
   const materialFolder = gui.addFolder('Material Settings');
-  alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
   
-  // Dynamic material controls (no regeneration needed)
+  // These will be set up when impostor is created
   materialFolder.add(materialConfig, 'transparent').name('Transparent').onChange((value) => {
-    impostor.material.transparent = value;
-    impostor.material.needsUpdate = true;
-  });
-  materialFolder.add(materialConfig, 'disableBlending').name('Disable Triplanar Blending').onChange((value) => {
-    impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
-  });
-  
-  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
-  
-  materialFolder.add(config, 'showImpostor').onChange((value) => {
-    mesh.visible = !value;
-    impostor.visible = value;
+    if (impostor) {
+      impostor.material.transparent = value;
+      impostor.material.needsUpdate = true;
+    }
   });
   
-  // Export functionality
-  const exportFolder = gui.addFolder('Export Texture Atlas');
-  const exportConfig = {
+  materialFolder.add(materialConfig, 'disableBlending').name('Disable Blending').onChange((value) => {
+    if (impostor) {
+      impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
+      impostor.material.needsUpdate = true;
+    }
+  });
+  
+  // Display Controls  
+  materialFolder.add(config, 'showImpostor').name('Show Impostor').onChange((value) => {
+    if (impostor) impostor.visible = value;
+    if (currentMesh) currentMesh.visible = !value;
+  });
+  
+  materialFolder.open();
+  
+  // Export Controls
+  const exportFolder = gui.addFolder('Export');
+  exportFolder.add({
     exportAlbedo: () => {
-      const albedoTexture = impostor.material.map;
-      if (albedoTexture) {
-        exportTextureAsPNG(renderer, albedoTexture, `albedo_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
-      } else {
-        console.warn('Albedo texture not available for export');
-      }
-    },
-    exportNormalDepth: () => {
-      const normalTexture = impostor.material.normalMap;
-      if (normalTexture) {
-        exportTextureAsPNG(renderer, normalTexture, `normalDepth_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
-      } else {
-        console.warn('Normal/Depth texture not available for export');
+      if (impostor) {
+        exportTextureAsPNG(renderer, impostor.material.map, 'octahedral_albedo');
       }
     }
-  };
-  exportFolder.add(exportConfig, 'exportAlbedo').name('📤 Export Albedo PNG');
-  exportFolder.add(exportConfig, 'exportNormalDepth').name('📤 Export Normal/Depth PNG');
+  }, 'exportAlbedo').name('💾 Export Albedo');
   
-  const lightFolder = gui.addFolder('Directional Light');
-  lightFolder.add(directionalLight, 'intensity', 0, 10, 0.01).name('Intensity');
-  lightFolder.add(lightPosition, 'azimuth', -180, 180, 1).name('Azimuth').onChange(() => lightPosition.update());
-  lightFolder.add(lightPosition, 'elevation', -90, 90, 1).name('Elevation').onChange(() => lightPosition.update());
+  exportFolder.add({
+    exportNormal: () => {
+      if (impostor) {
+        exportTextureAsPNG(renderer, impostor.material.normalMap, 'octahedral_normal');
+      }
+    }
+  }, 'exportNormal').name('💾 Export Normal/Depth');
+  
+  // Setup drag and drop after GUI is created
+  setupDragAndDrop();
+}
 
-  // mesh.querySelectorAll('Mesh').forEach((m) => { m.material = new MeshNormalMaterial() }); // todo remove
+function setupDragAndDrop() {
+  // Prevent default drag behaviors
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    document.addEventListener(eventName, preventDefaults, false);
+    document.body.addEventListener(eventName, preventDefaults, false);
+  });
+
+  // Highlight drop area
+  ['dragenter', 'dragover'].forEach(eventName => {
+    document.addEventListener(eventName, highlight, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    document.addEventListener(eventName, unhighlight, false);
+  });
+
+  // Handle dropped files
+  document.addEventListener('drop', handleDrop, false);
+
+  function preventDefaults(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function highlight(e: Event) {
+    document.body.style.backgroundColor = 'rgba(0, 255, 0, 0.1)';
+  }
+
+  function unhighlight(e: Event) {
+    document.body.style.backgroundColor = '';
+  }
+
+  async function handleDrop(e: DragEvent) {
+    const dt = e.dataTransfer;
+    const files = dt?.files;
+
+    if (files?.length) {
+      const file = files[0];
+      if (file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf')) {
+        await loadModelFromFile(file);
+      } else {
+        alert('Please drop a .glb or .gltf file');
+      }
+    }
+  }
+}
+
+// Load default model and start
+loader.load('tree.glb', (gltf) => {
+  initializeModelAndImpostor(gltf.scene);
+  
+  // Set up dynamic GUI controllers after impostor is created
+  setTimeout(() => {
+    if (impostor) {
+      // Add alpha clamp controller
+      const materialFolder = gui.folders.find((f: any) => f._title === 'Material Settings');
+      if (materialFolder) {
+        alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
+        hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 5, 0.1).name('Hybrid Distance');
+      }
+    }
+  }, 100);
+}, 
+undefined, // onProgress
+(error) => {
+  console.warn('Could not load default tree.glb:', error);
+  console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
+  
+  // Start animation loop even without a model
+  if (!window.animationStarted) {
+    animate();
+    window.animationStarted = true;
+  }
 });
 
 // Handle window resize

@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI } from 'lil-gui';
 import Stats from 'stats.js';
-import { OctahedralImpostor, exportTextureAsPNG } from '../src/index.js';
+import { OctahedralImpostor, exportTextureAsPNG, createOctahedralImpostorMaterial } from '../src/index.js';
 import { FPSController } from './controllers/FPSController.js';
 import { createGround } from './objects/Ground.js';
 import { setupLights } from './utils/Lights.js';
@@ -65,8 +65,20 @@ let orbitControls: OrbitControls;
 let inputHandler: InputHandler;
 let lastTime = 0;
 let impostor: OctahedralImpostor<THREE.MeshLambertMaterial>;
+let currentMesh: THREE.Object3D | null = null;
+let currentAtlasConfig: any = null;
 let updateDebugWireframe: (() => void) | null = null;
 let updateStatusIndicator: (() => void) | null = null;
+
+// Configuration for texture import
+const textureImportConfig = {
+  albedoTexture: null as THREE.Texture | null,
+  normalTexture: null as THREE.Texture | null,
+  resolution: 2048,
+  framesPerSide: 12,
+  useHemiOctahedron: true,
+  generateFromTextures: () => generateImpostorFromTextures()
+};
 
 
 
@@ -161,6 +173,181 @@ function switchControlMode(mode: ControlMode) {
   }
 }
 
+async function loadModelFromFile(file: File, oldMesh: THREE.Object3D, oldImpostor: OctahedralImpostor<THREE.MeshLambertMaterial>, atlasConfig: any): Promise<void> {
+  const loader = new GLTFLoader();
+  const url = URL.createObjectURL(file);
+  
+  try {
+    const gltf = await new Promise<any>((resolve, reject) => {
+      loader.load(url, resolve, undefined, reject);
+    });
+    
+    // Clean up previous model and impostor
+    if (currentMesh) {
+      scene.remove(currentMesh);
+    }
+    if (impostor) {
+      scene.remove(impostor);
+      if (impostor.material.map) impostor.material.map.dispose();
+      if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+      impostor.material.dispose();
+    }
+    
+    const mesh = gltf.scene;
+    
+    // Calculate the bounding box to position the model correctly on the ground
+    const box = new THREE.Box3().setFromObject(mesh);
+    const groundOffset = -box.min.y; // Offset to place bottom at y=0
+    
+    // Position the original mesh so its bottom sits on the ground
+    mesh.position.set(0, groundOffset, 0);
+    
+    // Update the mesh's world matrix after positioning so bounding calculations are correct
+    mesh.updateMatrixWorld(true);
+    scene.add(mesh);
+
+    // Update global references
+    currentMesh = mesh;
+
+    // Create new impostor with current settings
+    impostor = new OctahedralImpostor({
+      renderer: renderer,
+      target: mesh,
+      useHemiOctahedron: currentAtlasConfig.useHemiOctahedron,
+      transparent: true,
+      disableBlending: false,
+      spritesPerSide: currentAtlasConfig.spritesPerSide,
+      textureSize: currentAtlasConfig.textureSize,
+      baseType: THREE.MeshLambertMaterial
+    });
+    
+    scene.add(impostor);
+
+    // Hide original mesh, show impostor
+    mesh.visible = false;
+    impostor.visible = true;
+
+    console.log('✅ Successfully loaded model:', file.name);
+    
+  } catch (error) {
+    console.error('❌ Failed to load model:', file.name, error);
+    alert(`Failed to load model: ${file.name}`);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function setupDragAndDrop() {
+  // Prevent default drag behaviors
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    document.addEventListener(eventName, preventDefaults, false);
+    document.body.addEventListener(eventName, preventDefaults, false);
+  });
+
+  // Highlight drop area
+  ['dragenter', 'dragover'].forEach(eventName => {
+    document.addEventListener(eventName, highlight, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    document.addEventListener(eventName, unhighlight, false);
+  });
+
+  // Handle dropped files
+  document.addEventListener('drop', handleDrop, false);
+
+  function preventDefaults(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function highlight(e: Event) {
+    document.body.style.backgroundColor = 'rgba(0, 255, 0, 0.1)';
+  }
+
+  function unhighlight(e: Event) {
+    document.body.style.backgroundColor = '';
+  }
+
+  async function handleDrop(e: DragEvent) {
+    const dt = e.dataTransfer;
+    const files = dt?.files;
+
+    if (files?.length) {
+      const file = files[0];
+      if (file.name.toLowerCase().endsWith('.glb') || file.name.toLowerCase().endsWith('.gltf')) {
+        await loadModelFromFile(file, currentMesh, impostor, currentAtlasConfig);
+      } else {
+        alert('Please drop a .glb or .gltf file');
+      }
+    }
+  }
+}
+
+async function generateImpostorFromTextures(): Promise<void> {
+  if (!textureImportConfig.albedoTexture || !textureImportConfig.normalTexture) {
+    alert('Please import both albedo and normal textures first!');
+    return;
+  }
+
+  try {
+    // Clean up previous impostor
+    if (impostor) {
+      scene.remove(impostor);
+      if (impostor.material.map) impostor.material.map.dispose();
+      if (impostor.material.normalMap) impostor.material.normalMap.dispose();
+      impostor.material.dispose();
+    }
+
+    // Hide current mesh if any
+    if (currentMesh) {
+      currentMesh.visible = false;
+    }
+
+    // Create a dummy target object for material creation
+    const dummyGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const dummyMaterial = new THREE.MeshLambertMaterial();
+    const dummyTarget = new THREE.Mesh(dummyGeometry, dummyMaterial);
+
+    // Create impostor material using the standard creation process
+    const material = createOctahedralImpostorMaterial({
+      renderer: renderer,
+      target: dummyTarget,
+      baseType: THREE.MeshLambertMaterial,
+      spritesPerSide: textureImportConfig.framesPerSide,
+      useHemiOctahedron: textureImportConfig.useHemiOctahedron,
+      transparent: true,
+      disableBlending: false,
+      scale: 5,
+      translation: new THREE.Vector3(0, 0, 0)
+    });
+
+    // Override the generated textures with our imported ones
+    if (material.map) material.map.dispose();
+    if (material.normalMap) material.normalMap.dispose();
+    
+    material.map = textureImportConfig.albedoTexture;
+    material.normalMap = textureImportConfig.normalTexture;
+    material.needsUpdate = true;
+
+    // Create impostor mesh
+    impostor = new OctahedralImpostor(material);
+    const impostorScale = 5;
+    impostor.scale.setScalar(impostorScale);
+    
+    // Position so bottom edge is flush with ground (y=0)
+    // Since the plane is centered, move it up by half its height
+    impostor.position.set(0, impostorScale / 2, 0);
+    
+    scene.add(impostor);
+
+    console.log('✅ Successfully created impostor from imported textures');
+  } catch (error) {
+    console.error('❌ Failed to create impostor from textures:', error);
+    alert('Failed to create impostor from textures');
+  }
+}
+
 async function loadTreeAndCreateImpostor() {
   const loader = new GLTFLoader();
   
@@ -189,6 +376,10 @@ async function loadTreeAndCreateImpostor() {
       useHemiOctahedron: true,
     };
 
+    // Set global references
+    currentMesh = mesh;
+    currentAtlasConfig = atlasConfig;
+
     // Create impostor AFTER the mesh is correctly positioned
     // This way the bounding sphere calculation will use the correct position
     impostor = new OctahedralImpostor({
@@ -215,15 +406,121 @@ async function loadTreeAndCreateImpostor() {
     
   } catch (error) {
     console.error('Failed to load tree model:', error);
+    console.log('🎯 Ready for file import! Use the "📂 Select GLB/GLTF File" button or drag & drop a .glb/.gltf file');
+    
+    // Setup GUI even without a model for import functionality
+    setupGUI(null, null, null);
   }
 }
 
-function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshLambertMaterial>, atlasConfig: any) {
+function setupGUI(mesh: THREE.Object3D | null, impostorParam: OctahedralImpostor<THREE.MeshLambertMaterial> | null, atlasConfig: any) {
   const gui = new GUI();
   
   let alphaClampController: any;
   let hybridDistanceController: any;
   let debugWireframe: THREE.LineSegments | null = null;
+
+  // File Import Controls
+  const importFolder = gui.addFolder('📁 Model Import');
+  
+  // Create hidden file input
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.glb,.gltf';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+  
+  fileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      await loadModelFromFile(file, currentMesh, impostor, currentAtlasConfig);
+    }
+  });
+  
+  importFolder.add({
+    selectFile: () => fileInput.click()
+  }, 'selectFile').name('📂 Select GLB/GLTF File');
+  
+  // Drag and drop info
+  importFolder.add({
+    info: 'Drag & drop GLB/GLTF files anywhere!'
+  }, 'info').name('💡').disable();
+  
+  importFolder.open();
+
+  // Texture Import Controls
+  const textureImportFolder = gui.addFolder('🖼️ Texture Import');
+  
+  // Create texture loader
+  const textureLoader = new THREE.TextureLoader();
+  
+  // Create hidden file inputs for textures
+  const albedoFileInput = document.createElement('input');
+  albedoFileInput.type = 'file';
+  albedoFileInput.accept = 'image/*';
+  albedoFileInput.style.display = 'none';
+  document.body.appendChild(albedoFileInput);
+  
+  const normalFileInput = document.createElement('input');
+  normalFileInput.type = 'file';
+  normalFileInput.accept = 'image/*';
+  normalFileInput.style.display = 'none';
+  document.body.appendChild(normalFileInput);
+  
+  // Albedo texture input
+  albedoFileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      try {
+        textureImportConfig.albedoTexture = await textureLoader.loadAsync(url);
+        console.log('✅ Albedo texture loaded:', file.name);
+      } catch (error) {
+        console.error('❌ Failed to load albedo texture:', error);
+        alert('Failed to load albedo texture');
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+  });
+  
+  // Normal texture input
+  normalFileInput.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      try {
+        textureImportConfig.normalTexture = await textureLoader.loadAsync(url);
+        console.log('✅ Normal texture loaded:', file.name);
+      } catch (error) {
+        console.error('❌ Failed to load normal texture:', error);
+        alert('Failed to load normal texture');
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+  });
+  
+  textureImportFolder.add({
+    selectAlbedo: () => albedoFileInput.click()
+  }, 'selectAlbedo').name('📂 Select Albedo Map');
+  
+  textureImportFolder.add({
+    selectNormal: () => normalFileInput.click()
+  }, 'selectNormal').name('📂 Select Normal Map');
+  
+  // Resolution and frames settings for imported textures
+  textureImportFolder.add(textureImportConfig, 'resolution', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)');
+  textureImportFolder.add(textureImportConfig, 'framesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side');
+  textureImportFolder.add(textureImportConfig, 'useHemiOctahedron').name('Use Hemi-Octahedron');
+  
+  // Generate button
+  textureImportFolder.add(textureImportConfig, 'generateFromTextures').name('🚀 Generate Impostor');
+  
+  textureImportFolder.open();
+
+  // Setup drag and drop
+  setupDragAndDrop();
   
   // Add proper directional light for orbital mode (like the original example)
   const directionalLight = new THREE.DirectionalLight('white', 3);
@@ -290,6 +587,11 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
   }
   
   function regenerateImpostor() {
+    if (!currentMesh || !impostor || !currentAtlasConfig) {
+      console.warn('Cannot regenerate: no mesh, impostor, or atlas config loaded');
+      return;
+    }
+
     console.log('Starting regeneration...');
     
     // Store hybridDistance value before removing old impostor
@@ -308,19 +610,19 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
     impostor.material.dispose();
     
     // Ensure mesh is visible during texture atlas generation
-    mesh.visible = true;
-    mesh.updateMatrixWorld(true);
+    currentMesh.visible = true;
+    currentMesh.updateMatrixWorld(true);
     
     try {
       // Create new impostor with updated settings
       impostor = new OctahedralImpostor({
         renderer: renderer,
-        target: mesh,
-        useHemiOctahedron: atlasConfig.useHemiOctahedron,
+        target: currentMesh,
+        useHemiOctahedron: currentAtlasConfig.useHemiOctahedron,
         transparent: materialConfig.transparent,
         disableBlending: materialConfig.disableBlending,
-        spritesPerSide: atlasConfig.spritesPerSide,
-        textureSize: atlasConfig.textureSize,
+        spritesPerSide: currentAtlasConfig.spritesPerSide,
+        textureSize: currentAtlasConfig.textureSize,
         baseType: THREE.MeshLambertMaterial
       });
       
@@ -333,7 +635,7 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
       }
       
       // Hide original mesh and show impostor based on config
-      mesh.visible = !config.showImpostor;
+      currentMesh.visible = !config.showImpostor;
       impostor.visible = config.showImpostor;
       
       // Update GUI controllers to reference new material
@@ -353,26 +655,38 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
       // Update info display
       infoDisplay.updateInfo();
       
-      console.log(`✅ Regenerated texture atlas: ${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} frames (${atlasConfig.spritesPerSide * atlasConfig.spritesPerSide} total angles)`);
+      console.log(`✅ Regenerated texture atlas: ${currentAtlasConfig.textureSize}px, ${currentAtlasConfig.spritesPerSide}x${currentAtlasConfig.spritesPerSide} frames (${currentAtlasConfig.spritesPerSide * currentAtlasConfig.spritesPerSide} total angles)`);
     } catch (error) {
       console.error('❌ Error during regeneration:', error);
       // Fallback: ensure mesh is visible if impostor creation fails
-      mesh.visible = true;
+      currentMesh.visible = true;
     }
   }
   
-  // Add regenerate function to atlasConfig
-  atlasConfig.regenerate = regenerateImpostor;
+  // Add regenerate function to currentAtlasConfig if it exists, otherwise create it if needed
+  if (currentAtlasConfig) {
+    currentAtlasConfig.regenerate = regenerateImpostor;
+  } else if (atlasConfig) {
+    atlasConfig.regenerate = regenerateImpostor;
+    currentAtlasConfig = atlasConfig;
+  }
   
   // Info display
   const infoDisplay = {
-    totalAngles: atlasConfig.spritesPerSide * atlasConfig.spritesPerSide,
-    atlasInfo: `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`,
-    octahedralMode: atlasConfig.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical',
+    totalAngles: (currentAtlasConfig || atlasConfig)?.spritesPerSide * (currentAtlasConfig || atlasConfig)?.spritesPerSide || 0,
+    atlasInfo: currentAtlasConfig || atlasConfig ? `${(currentAtlasConfig || atlasConfig).textureSize}px, ${(currentAtlasConfig || atlasConfig).spritesPerSide}x${(currentAtlasConfig || atlasConfig).spritesPerSide}` : 'No model loaded',
+    octahedralMode: (currentAtlasConfig || atlasConfig)?.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical',
     updateInfo: function() {
-      this.totalAngles = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
-      this.atlasInfo = `${atlasConfig.textureSize}px, ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`;
-      this.octahedralMode = atlasConfig.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical';
+      const config = currentAtlasConfig || atlasConfig;
+      if (config) {
+        this.totalAngles = config.spritesPerSide * config.spritesPerSide;
+        this.atlasInfo = `${config.textureSize}px, ${config.spritesPerSide}x${config.spritesPerSide}`;
+        this.octahedralMode = config.useHemiOctahedron ? 'Hemispherical' : 'Full Spherical';
+      } else {
+        this.totalAngles = 0;
+        this.atlasInfo = 'No model loaded';
+        this.octahedralMode = 'N/A';
+      }
     }
   };
   
@@ -409,61 +723,94 @@ function setupGUI(mesh: THREE.Object3D, impostor: OctahedralImpostor<THREE.MeshL
   
   // Texture Atlas Generation Settings
   const atlasFolder = gui.addFolder('Texture Atlas Settings');
-  atlasFolder.add(atlasConfig, 'textureSize', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)').onChange(() => {
+  
+  // Use currentAtlasConfig if available, otherwise create default values for GUI
+  const atlasConfigForGUI = currentAtlasConfig || atlasConfig || {
+    textureSize: 8192,
+    spritesPerSide: 16,
+    useHemiOctahedron: true,
+    regenerate: () => {
+      if (currentAtlasConfig && currentAtlasConfig.regenerate) {
+        currentAtlasConfig.regenerate();
+      } else {
+        console.warn('No model loaded to regenerate');
+      }
+    }
+  };
+  
+  atlasFolder.add(atlasConfigForGUI, 'textureSize', [128, 256, 512, 1024, 2048, 4096, 8192]).name('Resolution (px)').onChange(() => {
+    if (currentAtlasConfig) currentAtlasConfig.textureSize = atlasConfigForGUI.textureSize;
     infoDisplay.updateInfo();
-    console.log(`Texture size changed to: ${atlasConfig.textureSize}px`);
+    console.log(`Texture size changed to: ${atlasConfigForGUI.textureSize}px`);
   });
-  atlasFolder.add(atlasConfig, 'spritesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side').onChange(() => {
+  atlasFolder.add(atlasConfigForGUI, 'spritesPerSide', [4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]).name('Frames per Side').onChange(() => {
+    if (currentAtlasConfig) currentAtlasConfig.spritesPerSide = atlasConfigForGUI.spritesPerSide;
     infoDisplay.updateInfo();
-    const totalFrames = atlasConfig.spritesPerSide * atlasConfig.spritesPerSide;
-    console.log(`Frames changed to: ${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide} (${totalFrames} angles)`);
+    const totalFrames = atlasConfigForGUI.spritesPerSide * atlasConfigForGUI.spritesPerSide;
+    console.log(`Frames changed to: ${atlasConfigForGUI.spritesPerSide}x${atlasConfigForGUI.spritesPerSide} (${totalFrames} angles)`);
   });
-  atlasFolder.add(atlasConfig, 'useHemiOctahedron').name('Hemispherical Mode').onChange(() => {
-    const mode = atlasConfig.useHemiOctahedron ? 'Hemispherical (upper hemisphere only)' : 'Full Spherical (360° coverage)';
+  atlasFolder.add(atlasConfigForGUI, 'useHemiOctahedron').name('Hemispherical Mode').onChange(() => {
+    if (currentAtlasConfig) currentAtlasConfig.useHemiOctahedron = atlasConfigForGUI.useHemiOctahedron;
+    const mode = atlasConfigForGUI.useHemiOctahedron ? 'Hemispherical (upper hemisphere only)' : 'Full Spherical (360° coverage)';
     console.log(`Octahedral mode changed to: ${mode}`);
     infoDisplay.updateInfo();
   });
   atlasFolder.add(infoDisplay, 'totalAngles').name('📊 Total Angles').listen().disable();
   atlasFolder.add(infoDisplay, 'atlasInfo').name('📏 Current Atlas').listen().disable();
   atlasFolder.add(infoDisplay, 'octahedralMode').name('🌐 Mode').listen().disable();
-  atlasFolder.add(atlasConfig, 'regenerate').name('🔄 Regenerate Atlas');
+  atlasFolder.add(atlasConfigForGUI, 'regenerate').name('🔄 Regenerate Atlas');
   atlasFolder.open();
   
   // Material Settings
   const materialFolder = gui.addFolder('Material Settings');
-  alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
+  
+  // Only add impostor-specific controls if impostor exists
+  if (impostor) {
+    alphaClampController = materialFolder.add(impostor.material.octahedralImpostorUniforms.alphaClamp, 'value', 0, 0.5, 0.01).name('Alpha Clamp');
+    hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
+  }
   
   // Dynamic material controls (no regeneration needed)
   materialFolder.add(materialConfig, 'transparent').name('Transparent').onChange((value) => {
-    impostor.material.transparent = value;
-    impostor.material.needsUpdate = true;
+    if (impostor) {
+      impostor.material.transparent = value;
+      impostor.material.needsUpdate = true;
+    }
   });
   materialFolder.add(materialConfig, 'disableBlending').name('Disable Triplanar Blending').onChange((value) => {
-    impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
+    if (impostor) {
+      impostor.material.octahedralImpostorUniforms.disableBlending.value = value ? 1.0 : 0.0;
+    }
   });
   
-  hybridDistanceController = materialFolder.add(impostor.material.octahedralImpostorUniforms.hybridDistance, 'value', 0, 10, 0.1).name('Elevation Threshold');
-  
   materialFolder.add(config, 'showImpostor').onChange((value) => {
-    mesh.visible = !value;
-    impostor.visible = value;
+    if (currentMesh) currentMesh.visible = !value;
+    if (impostor) impostor.visible = value;
   });
   
   // Export functionality
   const exportFolder = gui.addFolder('Export Texture Atlas');
   const exportConfig = {
     exportAlbedo: () => {
+      if (!impostor) {
+        console.warn('No impostor loaded for export');
+        return;
+      }
       const albedoTexture = impostor.material.map;
-      if (albedoTexture) {
-        exportTextureAsPNG(renderer, albedoTexture, `albedo_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
+      if (albedoTexture && currentAtlasConfig) {
+        exportTextureAsPNG(renderer, albedoTexture, `albedo_${currentAtlasConfig.textureSize}px_${currentAtlasConfig.spritesPerSide}x${currentAtlasConfig.spritesPerSide}`);
       } else {
         console.warn('Albedo texture not available for export');
       }
     },
     exportNormalDepth: () => {
+      if (!impostor) {
+        console.warn('No impostor loaded for export');
+        return;
+      }
       const normalTexture = impostor.material.normalMap;
-      if (normalTexture) {
-        exportTextureAsPNG(renderer, normalTexture, `normalDepth_${atlasConfig.textureSize}px_${atlasConfig.spritesPerSide}x${atlasConfig.spritesPerSide}`);
+      if (normalTexture && currentAtlasConfig) {
+        exportTextureAsPNG(renderer, normalTexture, `normalDepth_${currentAtlasConfig.textureSize}px_${currentAtlasConfig.spritesPerSide}x${currentAtlasConfig.spritesPerSide}`);
       } else {
         console.warn('Normal/Depth texture not available for export');
       }
