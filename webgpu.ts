@@ -88,16 +88,17 @@ const createOctahedralImpostorMaterial = (
 
   // Create a simple octahedral impostor using TSL
   const impostorColorNode = Fn(() => {
-    // Get camera direction (simplified approach for sprites)
-    const cameraDir = normalize(cameraPosition);
+    // Direction from sprite center to camera in world space
+    const spriteWorldPos = modelWorldMatrix.mul(vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    const viewDir = normalize(cameraPosition.sub(spriteWorldPos));
 
-    // Simple octahedral encoding for hemispherical mode
-    const absDir = cameraDir.abs();
-    const octSum = absDir.x.add(absDir.y).add(absDir.z);
-    const normalizedDir = cameraDir.div(octSum);
-
-    // Project to 2D octahedral coordinates
-    const encoded = normalizedDir.xz.mul(0.5).add(0.5);
+    // Hemispherical octahedral encoding (matches GLSL version)
+    const absDir = viewDir.abs();
+    const denom = absDir.x.add(absDir.y).add(absDir.z); // = dot(dir, sign(dir))
+    const n = viewDir.div(denom);
+    const encX = n.x.add(n.z);
+    const encY = n.z.sub(n.x);
+    const encoded = vec2(encX, encY).add(1.0).mul(0.5);
 
     // Calculate grid coordinates
     const spritesMinusOne = spritesPerSideUniform.sub(1.0);
