@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Octahedral Impostor - WebGPU Demo</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+        font-family: "Arial", sans-serif;
+      }
+
+      #container {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        color: white;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 10px;
+        border-radius: 5px;
+        z-index: 100;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      #loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-size: 18px;
+        z-index: 200;
+      }
+
+      #webgpu-error {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(255, 0, 0, 0.8);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        text-align: center;
+        z-index: 300;
+        display: none;
+      }
+
+      .file-input {
+        margin: 5px 0;
+      }
+
+      .file-input input {
+        margin-left: 10px;
+      }
+
+      .controls {
+        margin-top: 10px;
+      }
+
+      .control-group {
+        margin: 10px 0;
+      }
+
+      .control-group label {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .slider {
+        width: 200px;
+      }
+
+      button {
+        background: #4caf50;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 3px;
+        cursor: pointer;
+        margin: 2px;
+      }
+
+      button:hover {
+        background: #45a049;
+      }
+
+      button:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="loading">Loading WebGPU Impostor Demo...</div>
+
+      <div id="webgpu-error">
+        <h3>WebGPU Not Supported</h3>
+        <p>Your browser doesn't support WebGPU or it's not enabled.</p>
+        <p>
+          Please use Chrome/Edge 113+ with WebGPU enabled, or Firefox Nightly
+          with WebGPU enabled.
+        </p>
+        <p>
+          You can enable WebGPU in Chrome by going to chrome://flags and
+          enabling "Unsafe WebGPU".
+        </p>
+      </div>
+
+      <div id="info">
+        <strong>Octahedral Impostor - WebGPU Demo</strong><br />
+        Using Three.js WebGPURenderer + TSL Nodes<br /><br />
+
+        <div class="file-input">
+          <label>Albedo Texture:</label>
+          <input type="file" id="albedo-input" accept="image/*" />
+          <small style="color: #aaa; display: block; margin-top: 2px">
+            Auto-loads demo texture or upload your own
+          </small>
+        </div>
+
+        <div class="file-input">
+          <label>Normal Map:</label>
+          <input type="file" id="normal-input" accept="image/*" />
+          <small style="color: #aaa; display: block; margin-top: 2px">
+            Auto-loads demo texture or upload your own
+          </small>
+        </div>
+
+        <div class="controls">
+          <div class="control-group">
+            <label for="alpha-clamp"
+              >Alpha Clamp: <span id="alpha-value">0.1</span></label
+            >
+            <input
+              type="range"
+              id="alpha-clamp"
+              class="slider"
+              min="0"
+              max="0.5"
+              step="0.01"
+              value="0.1"
+            />
+          </div>
+
+          <div class="control-group">
+            <label for="disable-blending">
+              <input type="checkbox" id="disable-blending" /> Disable Triplanar
+              Blending
+            </label>
+          </div>
+
+          <div class="control-group">
+            <label for="hemispherical-mode">
+              <input type="checkbox" id="hemispherical-mode" checked />
+              Hemispherical Mode
+            </label>
+          </div>
+
+          <div class="control-group">
+            <label for="restrict-camera">
+              <input type="checkbox" id="restrict-camera" checked /> Restrict
+              Camera Below Y=0
+            </label>
+            <small style="color: #aaa; display: block; margin-top: 2px">
+              Prevents camera artifacts in hemispherical mode
+            </small>
+          </div>
+
+          <div class="control-group">
+            <label for="elevation-threshold"
+              >Elevation Threshold: <span id="elevation-value">2.0</span></label
+            >
+            <input
+              type="range"
+              id="elevation-threshold"
+              class="slider"
+              min="0"
+              max="10"
+              step="0.1"
+              value="2.0"
+            />
+          </div>
+
+          <div class="control-group">
+            <button id="reset-camera">Reset Camera</button>
+            <button id="toggle-wireframe">Toggle Wireframe</button>
+          </div>
+        </div>
+
+        <div style="margin-top: 15px; font-size: 11px; opacity: 0.8">
+          Mouse: Orbit camera<br />
+          Scroll: Zoom<br />
+          Requires albedo + normal textures to render impostor
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/webgpu.ts"></script>
+  </body>
+</html>
