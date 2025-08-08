@@ -1,6 +1,8 @@
-import { defineConfig } from "vite";
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
 
 export default defineConfig({
+  plugins: [react()],
   // development server configuration
   server: {
     port: 5173,
@@ -9,9 +11,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: "index.html",
-        webgpu: "webgpu.html",
+        main: 'index.html',
+        webgpu: 'webgpu.html',
       },
     },
   },
-});
+})

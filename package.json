@@ -35,7 +35,10 @@
   },
   "devDependencies": {
     "@dimforge/rapier3d-compat": "0.18.0",
+    "@types/react": "19.1.9",
+    "@types/react-dom": "19.1.7",
     "@types/three": "0.178.0",
+    "@vitejs/plugin-react": "4.7.0",
     "lil-gui": "0.20.0",
     "stats.js": "0.17.0",
     "typescript": "5.9.2",
@@ -43,5 +46,9 @@
   },
   "peerDependencies": {
     "three": "0.178.0"
+  },
+  "dependencies": {
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
   }
 }
