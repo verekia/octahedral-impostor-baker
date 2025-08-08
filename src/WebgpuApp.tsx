@@ -19,6 +19,8 @@ import {
   uv,
   normalize,
   clamp,
+  min as tslMin,
+  step,
   vec2,
   vec4,
   float,
@@ -152,19 +154,58 @@ const useThree = (config: Config, textures: TexturePair) => {
       const colorNode = Fn(() => {
         const spriteWorldPos = modelWorldMatrix.mul(vec4(0.0, 0.0, 0.0, 1.0)).xyz
         const viewDir = normalize(cameraPosition.sub(spriteWorldPos))
+
+        // Octahedral encode camera-to-sprite direction, compute grid and weights
         const absDir = viewDir.abs()
         const denom = absDir.x.add(absDir.y).add(absDir.z)
         const n = viewDir.div(denom)
         const encX = n.x.add(n.z)
         const encY = n.z.sub(n.x)
         const encoded = vec2(encX, encY).add(1.0).mul(0.5)
-        const spritesMinusOne = spritesPerSideUniform.sub(1.0)
-        const grid = encoded.mul(spritesMinusOne)
+
+        const spritesMinusOne = vec2(spritesPerSideUniform.sub(1.0), spritesPerSideUniform.sub(1.0))
+        const grid = encoded.mul(spritesPerSideUniform.sub(1.0))
         const gridFloor = clamp(grid.floor(), vec2(0.0), spritesMinusOne)
+        const gridFract = grid.fract()
+
+        // Compute sprite indices (vSprite1, vSprite2, vSprite3)
+        const w = gridFract.x.sub(gridFract.y).ceil().clamp(0.0, 1.0)
+        const dirMix = vec2(w, w.oneMinus()) // (1,0) or (0,1)
+        const vSprite1 = gridFloor
+        const vSprite2 = tslMin(vSprite1.add(dirMix), spritesMinusOne)
+        const vSprite3 = tslMin(vSprite1.add(vec2(1.0)), spritesMinusOne)
+
+        // UVs within each frame
         const frameSize = float(1.0).div(spritesPerSideUniform)
-        const frameOffset = gridFloor.mul(frameSize)
-        const frameUV = frameOffset.add(uv().mul(frameSize))
-        return albedoNode.sample(frameUV)
+        const uvLocal = uv().mul(frameSize)
+        const uv1 = vSprite1.mul(frameSize).add(uvLocal)
+        const uv2 = vSprite2.mul(frameSize).add(uvLocal)
+        const uv3 = vSprite3.mul(frameSize).add(uvLocal)
+
+        // Weights like GLSL version
+        const w1 = tslMin(float(1.0).sub(gridFract.x), float(1.0).sub(gridFract.y))
+        const w2 = gridFract.x.sub(gridFract.y).abs()
+        const w3 = tslMin(gridFract.x, gridFract.y)
+
+        const s1 = albedoNode.sample(uv1)
+        const s2 = albedoNode.sample(uv2)
+        const s3 = albedoNode.sample(uv3)
+
+        const blended = s1.mul(w1).add(s2.mul(w2)).add(s3.mul(w3))
+
+        if (config.disableBlending) {
+          // Select dominant sprite without blending
+          const b12 = step(w2, w1) // w1 >= w2
+          const b13 = step(w3, w1) // w1 >= w3
+          const m1 = b12.mul(b13)
+          const b23 = step(w3, w2) // w2 >= w3
+          const b21 = step(w1, w2) // w2 >= w1
+          const m2 = b23.mul(b21)
+          const m3 = float(1.0).sub(m1.add(m2))
+          return s1.mul(m1).add(s2.mul(m2)).add(s3.mul(m3))
+        }
+
+        return blended
       })()
 
       material.colorNode = colorNode
@@ -172,7 +213,7 @@ const useThree = (config: Config, textures: TexturePair) => {
       material.alphaTest = config.alphaClamp
       return material
     }
-  }, [config.alphaClamp, config.spritesPerSide])
+  }, [config.alphaClamp, config.spritesPerSide, config.disableBlending])
 
   useEffect(() => {
     let cleanup: (() => void) | undefined
